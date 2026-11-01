@@ -24,4 +24,6 @@
   :depends-on ("ac-library")
   :pathname "test/"
   :components ((:file "test"))
-  :perform (test-op (o c) (uiop:symbol-call :ac-library-test :run-all)))
+  :perform (test-op (o c)
+             (unless (uiop:symbol-call :ac-library-test :run-all)
+               (error "ac-library test suite failed"))))
