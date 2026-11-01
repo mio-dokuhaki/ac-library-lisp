@@ -40,25 +40,35 @@
   (format t "~A ~A~%" (if ok "ok  " "FAIL") name)
   (unless ok (incf *failures*)))
 
-(defun undefined-warnings (file)
+(defun compile-problems (file)
   (let ((messages '()))
-    (handler-bind ((warning (lambda (w)
-                              (let ((text (princ-to-string w)))
-                                (when (search "undefined" (string-downcase text))
-                                  (push text messages)))
-                              (muffle-warning w))))
-      (let ((*error-output* (make-broadcast-stream))
-            (*standard-output* (make-broadcast-stream)))
-        (compile-file file :output-file (merge-pathnames "tmp.fasl" *work*))))
+    (handler-case
+        (handler-bind ((warning (lambda (w)
+                                  (let ((text (princ-to-string w)))
+                                    (when (search "undefined" (string-downcase text))
+                                      (push text messages)))
+                                  (muffle-warning w))))
+          (let ((*error-output* (make-broadcast-stream))
+                (*standard-output* (make-broadcast-stream)))
+            (multiple-value-bind (output warnings-p failure-p)
+                (compile-file file :output-file (merge-pathnames "tmp.fasl" *work*))
+              (declare (ignore warnings-p))
+              (when (or (null output) failure-p)
+                (push "compile-file reported failure" messages)))))
+      (error (e)
+        (push (format nil "compile-file signaled: ~A" e) messages)))
     messages))
 
 (defun check-standalone-modules ()
   (dolist (module '("dsu" "fenwicktree" "segtree" "lazysegtree" "string" "math" "modint"
                     "convolution" "maxflow" "mincostflow" "scc" "twosat"))
     (let* ((file (expand (format nil "only-~A" module) (format nil "(acl-include :~A)~%" module)))
-           (messages (undefined-warnings file)))
-      (report (null messages) (format nil "standalone :~A has no undefined references" module))
-      (dolist (m messages) (format t "      ~A~%" m)))))
+           (messages (compile-problems file)))
+      (report (null messages) (format nil "standalone :~A compiles with no undefined references" module))
+      (dolist (m messages) (format t "      ~A~%" m))))
+  (let* ((file (expand "broken-source" (format nil "(acl-include :dsu)~%(defun broken () (let ((x)) (1+ x) (unknown-macro-form . 3)))~%")))
+         (messages (compile-problems file)))
+    (report (not (null messages)) "compile failures are detected")))
 
 (defun check-output (name source expected)
   (let ((file (expand name source)))
@@ -82,6 +92,15 @@
   (check-output "include-after-character-literals"
                 (format nil "(defvar *c* (list #\\\" #\\|))~%(acl-include :math)~%(princ (pow-mod 2 10 1000))~%")
                 "24")
+  (check-output "include-after-pipe-escaped-symbol"
+                (format nil "(defvar |\"| 1)~%(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%")
+                "1")
+  (check-output "include-after-backslash-escaped-symbol"
+                (format nil "(defvar a\\\"b 1)~%(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%")
+                "1")
+  (check-output "include-inside-multiline-pipe-symbol"
+                (format nil "(defvar |multi~%(acl-include :math)~%line| 1)~%(acl-include :dsu)~%(princ (dsu-same (make-dsu 2) 1 1))~%")
+                "T")
   (format t "~D failures~%" *failures*)
   (sb-ext:exit :code (if (zerop *failures*) 0 1)))
 
