@@ -1,0 +1,41 @@
+(in-package :ac-library)
+
+(defstruct (two-sat (:constructor %make-two-sat (n answer from to))
+                    (:conc-name %two-sat-)
+                    (:copier nil))
+  (n 0 :type fixnum)
+  answer
+  from
+  to)
+
+(defun make-two-sat (n)
+  (assert (<= 0 n))
+  (%make-two-sat n (make-array n :initial-element nil)
+                 (%make-growing-vector) (%make-growing-vector)))
+
+(defun two-sat-add-clause (ts i f j g)
+  (let ((n (%two-sat-n ts))
+        (from (%two-sat-from ts))
+        (to (%two-sat-to ts)))
+    (assert (and (<= 0 i) (< i n) (<= 0 j) (< j n)))
+    (vector-push-extend (+ (* 2 i) (if f 0 1)) from)
+    (vector-push-extend (+ (* 2 j) (if g 1 0)) to)
+    (vector-push-extend (+ (* 2 j) (if g 0 1)) from)
+    (vector-push-extend (+ (* 2 i) (if f 1 0)) to)
+    ts))
+
+(defun two-sat-satisfiable (ts)
+  (let* ((n (%two-sat-n ts))
+         (answer (%two-sat-answer ts)))
+    (multiple-value-bind (start elist)
+        (%csr (* 2 n) (%two-sat-from ts) (%two-sat-to ts))
+      (multiple-value-bind (num ids) (%scc-ids (* 2 n) start elist)
+        (declare (ignore num))
+        (dotimes (i n)
+          (when (= (aref ids (* 2 i)) (aref ids (1+ (* 2 i))))
+            (return-from two-sat-satisfiable nil))
+          (setf (svref answer i) (< (aref ids (* 2 i)) (aref ids (1+ (* 2 i))))))
+        t))))
+
+(defun two-sat-answer (ts)
+  (copy-seq (%two-sat-answer ts)))
