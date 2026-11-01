@@ -40,6 +40,27 @@
          (or (= (length trimmed) 12)
              (member (char trimmed 12) '(#\Space #\Tab #\) #\Newline))))))
 
+(defun scan-line (line depth in-string)
+  (let ((i 0) (n (length line)))
+    (flet ((at (k c) (and (< (+ i k) n) (char= (char line (+ i k)) c))))
+      (loop while (< i n)
+            do (let ((c (char line i)))
+                 (cond
+                   (in-string
+                    (cond ((char= c #\\) (incf i 2))
+                          ((char= c #\") (setf in-string nil) (incf i))
+                          (t (incf i))))
+                   ((> depth 0)
+                    (cond ((and (char= c #\|) (at 1 #\#)) (decf depth) (incf i 2))
+                          ((and (char= c #\#) (at 1 #\|)) (incf depth) (incf i 2))
+                          (t (incf i))))
+                   ((char= c #\;) (return))
+                   ((char= c #\") (setf in-string t) (incf i))
+                   ((and (char= c #\#) (at 1 #\|)) (setf depth 1) (incf i 2))
+                   ((and (char= c #\#) (at 1 #\\)) (incf i 3))
+                   (t (incf i)))))))
+  (values depth in-string))
+
 (defun parse-include (line)
   (let ((form (let ((*package* (find-package :acl-expander))
                     (*read-eval* nil))
@@ -68,12 +89,14 @@
 
 (defun expand (input lib)
   (let ((emitted '())
-        (base-emitted nil))
+        (base-emitted nil)
+        (depth 0)
+        (in-string nil))
     (with-output-to-string (out)
       (with-input-from-string (in input)
         (loop for line = (read-line in nil)
               while line
-              do (if (include-line-p line)
+              do (if (and (= depth 0) (not in-string) (include-line-p line))
                      (let ((needed (remove-if (lambda (k) (member k emitted))
                                               (closure (parse-include line)))))
                        (when (or needed (not base-emitted))
@@ -91,6 +114,7 @@
                            (push k emitted))
                          (format out "(in-package :cl-user)~%(use-package :ac-library)~%")))
                      (progn
+                       (multiple-value-setq (depth in-string) (scan-line line depth in-string))
                        (write-string line out)
                        (terpri out))))))))
 

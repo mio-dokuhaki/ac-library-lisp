@@ -33,7 +33,8 @@
         (declare (ignore num))
         (dotimes (i n)
           (when (= (aref ids (* 2 i)) (aref ids (1+ (* 2 i))))
-            (return-from two-sat-satisfiable nil))
+            (return-from two-sat-satisfiable nil)))
+        (dotimes (i n)
           (setf (svref answer i) (< (aref ids (* 2 i)) (aref ids (1+ (* 2 i))))))
         t))))
 
