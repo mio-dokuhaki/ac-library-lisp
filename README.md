@@ -98,10 +98,14 @@ also works in the REPL.
 
 ```sh
 sbcl --script test/run.lisp
+sbcl --script test/expander-test.lisp
 ```
 
-runs the test suite, which checks every module against brute-force implementations on
-random inputs. The suite also runs on GitHub Actions.
+The first command checks every module against brute-force implementations on random inputs.
+The second checks the expander: each module expanded on its own must compile with no undefined
+references, and `acl-include` written inside comments, strings or `|...|` symbols must be
+ignored. The unit tests can also be run with `(asdf:test-system :ac-library)`, which signals an
+error when a test fails. Both scripts run on GitHub Actions.
 
 ## License
 
@@ -137,9 +141,11 @@ sbcl --script expander.lisp main.lisp -o combined.lisp
 
 ```sh
 sbcl --script test/run.lisp
+sbcl --script test/expander-test.lisp
 ```
 
-全モジュールをランダム入力で愚直解と比較します。
+1つ目は全モジュールをランダム入力で愚直解と比較します。2つ目は expander のテストで、各モジュールを単体で展開しても未定義関数なくコンパイルできること、コメント・文字列・`|...|` シンボルの中の `acl-include` が無視されることを確認します。
+`(asdf:test-system :ac-library)` でもテストを実行でき、失敗するとエラーになります。どちらも GitHub Actions で実行されます。
 
 ### ライセンス
 
