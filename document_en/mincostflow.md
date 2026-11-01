@@ -22,5 +22,6 @@ Primal-dual algorithm with Dijkstra. Capacities and costs are non-negative integ
 `mcf-edge` accessors: `mcf-edge-from`, `mcf-edge-to`, `mcf-edge-cap`, `mcf-edge-flow`,
 `mcf-edge-cost`.
 
-As in ACL, `mcf-graph-flow` and `mcf-graph-slope` should be called at most once per graph if
-you rely on the reported cost; the flow stored on edges is updated by each call.
+As in ACL, call `mcf-graph-flow` or `mcf-graph-slope` at most once per graph. Calling them
+again on the same graph is not supported and the result is not guaranteed to be optimal;
+build a new graph instead. Each call updates the flow stored on the edges.

@@ -12,6 +12,11 @@ sbcl --script expander.lisp main.lisp -o combined.lisp
 * Module names: `:dsu :fenwicktree :segtree :lazysegtree :string :math :modint :convolution
   :maxflow :mincostflow :scc :twosat`, or `:all`.
 * Each module is emitted at most once, even when several `acl-include` lines name it.
+* Modules are self-contained: including one module never requires including another by hand.
+* Only real top-level lines are expanded. An `acl-include` inside a `#| ... |#` block comment,
+  after `;`, inside a string literal, or inside a `|...|` symbol name is left untouched.
+* An `acl-include` form must be the first thing on its line (indentation is fine) and must fit
+  on that one line.
 * Put `acl-include` before your own `in-package`, if you use one; the expanded code switches to
   `cl-user` after the library.
 * Unknown modules or a missing input file produce an error message and exit status 1.
