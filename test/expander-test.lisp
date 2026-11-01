@@ -122,6 +122,18 @@
   (check-output "completed-forms-do-not-block-include"
                 (format nil "(defvar *a* 'x) (defvar *b* #'car) (defvar *c* #+sbcl 1 #-sbcl 2)~%#+sbcl (defvar *d* 3)~%(defvar *e* `(1 ,*a*))~%(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%")
                 "1")
+  (dolist (case `(("quoted-symbol" "'x")
+                  ("function-quote" "#'car")
+                  ("feature-conditional-atom" "#+sbcl 42")
+                  ("feature-conditional-on-separate-lines" ,(format nil "#+sbcl~%42"))
+                  ("quoted-list" "'(1 2)")
+                  ("string" "\"text\"")
+                  ("character" "#\\a")
+                  ("backquote" "`(a ,(+ 1 2))")
+                  ("prefix-and-atom-on-separate-lines" ,(format nil "'~%x"))))
+    (check-output (format nil "top-level-~A-before-first-include" (first case))
+                  (format nil "~A~%(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%" (second case))
+                  "1"))
   (format t "~D failures~%" *failures*)
   (sb-ext:exit :code (if (zerop *failures*) 0 1)))
 
