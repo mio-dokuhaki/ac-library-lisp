@@ -13,10 +13,16 @@ sbcl --script expander.lisp main.lisp -o combined.lisp
   :maxflow :mincostflow :scc :twosat`, or `:all`.
 * Each module is emitted at most once, even when several `acl-include` lines name it.
 * Modules are self-contained: including one module never requires including another by hand.
-* Only real top-level lines are expanded. An `acl-include` inside a `#| ... |#` block comment,
-  after `;`, inside a string literal, or inside a `|...|` symbol name is left untouched.
+* Write `acl-include` at the top level of your file. The expander follows parentheses, block
+  comments, `;` comments, strings, character literals and `|...|` symbol names, and only
+  expands an `acl-include` that is outside all of them.
+* An `acl-include` nested inside another form (for example inside a `let` or a quoted list)
+  is not expanded: the line is copied as is and a warning with its line number is printed to
+  standard error. An `acl-include` inside a comment, a string or a `|...|` symbol name is
+  copied as is without a warning.
 * An `acl-include` form must be the first thing on its line (indentation is fine) and must fit
   on that one line.
+* The expander only scans text; it does not understand reader macros added by your own code.
 * Put `acl-include` before your own `in-package`, if you use one; the expanded code switches to
   `cl-user` after the library.
 * Unknown modules or a missing input file produce an error message and exit status 1.
