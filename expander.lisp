@@ -1,0 +1,125 @@
+(defpackage :acl-expander
+  (:use :cl))
+
+(in-package :acl-expander)
+
+(defparameter *acl-modules*
+  '((:dsu "dsu")
+    (:fenwicktree "fenwicktree")
+    (:segtree "segtree")
+    (:lazysegtree "lazysegtree")
+    (:string "string")
+    (:math "math")
+    (:modint "modint")
+    (:convolution "convolution")
+    (:maxflow "maxflow")
+    (:mincostflow "mincostflow")
+    (:scc "scc")
+    (:twosat "twosat")))
+
+(defparameter *acl-dependencies*
+  '((:twosat :scc)))
+
+(defun fail (format-string &rest args)
+  (format *error-output* "expander: ~?~%" format-string args)
+  (sb-ext:exit :code 1 :abort t))
+
+(defun usage ()
+  (format *error-output* "usage: sbcl --script expander.lisp INPUT [-o OUTPUT] [--lib DIR]~%")
+  (sb-ext:exit :code 2 :abort t))
+
+(defun read-file (path)
+  (with-open-file (in path :external-format :utf-8)
+    (let ((s (make-string (file-length in))))
+      (subseq s 0 (read-sequence s in)))))
+
+(defun include-line-p (line)
+  (let ((trimmed (string-left-trim '(#\Space #\Tab) line)))
+    (and (>= (length trimmed) 12)
+         (string-equal "(acl-include" trimmed :end2 12)
+         (or (= (length trimmed) 12)
+             (member (char trimmed 12) '(#\Space #\Tab #\) #\Newline))))))
+
+(defun parse-include (line)
+  (let ((form (let ((*package* (find-package :acl-expander))
+                    (*read-eval* nil))
+                (handler-case (read-from-string line)
+                  (error () (fail "cannot parse include line: ~A" line))))))
+    (mapcar (lambda (x)
+              (let ((key (intern (string-upcase (string x)) :keyword)))
+                (unless (or (eq key :all) (assoc key *acl-modules*))
+                  (fail "unknown module ~S (available: ~{~(~A~)~^ ~} all)"
+                        x (mapcar #'car *acl-modules*)))
+                key))
+            (rest form))))
+
+(defun closure (keys)
+  (let ((result '()))
+    (labels ((visit (k)
+               (unless (member k result)
+                 (push k result)
+                 (dolist (d (rest (assoc k *acl-dependencies*)))
+                   (visit d)))))
+      (dolist (k keys)
+        (if (eq k :all)
+            (mapc #'visit (mapcar #'car *acl-modules*))
+            (visit k))))
+    (remove-if-not (lambda (k) (member k result)) (mapcar #'car *acl-modules*))))
+
+(defun expand (input lib)
+  (let ((emitted '())
+        (base-emitted nil))
+    (with-output-to-string (out)
+      (with-input-from-string (in input)
+        (loop for line = (read-line in nil)
+              while line
+              do (if (include-line-p line)
+                     (let ((needed (remove-if (lambda (k) (member k emitted))
+                                              (closure (parse-include line)))))
+                       (when (or needed (not base-emitted))
+                         (unless base-emitted
+                           (dolist (f '("package" "internal"))
+                             (write-string (read-file (merge-pathnames (concatenate 'string f ".lisp") lib)) out)
+                             (terpri out))
+                           (setf base-emitted t))
+                         (dolist (k needed)
+                           (write-string (read-file (merge-pathnames
+                                                     (concatenate 'string (second (assoc k *acl-modules*)) ".lisp")
+                                                     lib))
+                                         out)
+                           (terpri out)
+                           (push k emitted))
+                         (format out "(in-package :cl-user)~%(use-package :ac-library)~%")))
+                     (progn
+                       (write-string line out)
+                       (terpri out))))))))
+
+(defun main (args)
+  (let ((input nil)
+        (output nil)
+        (lib (merge-pathnames "src/" (make-pathname :name nil :type nil :defaults *load-truename*))))
+    (loop while args
+          do (let ((a (pop args)))
+               (cond ((string= a "-o") (setf output (or (pop args) (usage))))
+                     ((string= a "--lib")
+                      (let ((dir (or (pop args) (usage))))
+                        (setf lib (uiop-free-directory dir))))
+                     ((or (string= a "-h") (string= a "--help")) (usage))
+                     (input (usage))
+                     (t (setf input a)))))
+    (unless input (usage))
+    (unless (probe-file input) (fail "input file not found: ~A" input))
+    (unless (probe-file (merge-pathnames "package.lisp" lib))
+      (fail "library sources not found in ~A" (namestring lib)))
+    (let ((text (expand (read-file input) lib)))
+      (if output
+          (with-open-file (out output :direction :output :if-exists :supersede
+                                      :external-format :utf-8)
+            (write-string text out))
+          (write-string text *standard-output*)))))
+
+(defun uiop-free-directory (dir)
+  (let ((s (string-right-trim "/" dir)))
+    (pathname (concatenate 'string s "/"))))
+
+(main (rest sb-ext:*posix-argv*))

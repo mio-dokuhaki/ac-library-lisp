@@ -1,0 +1,24 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SBCL
+        run: sudo apt-get update && sudo apt-get install -y sbcl
+      - name: Run tests
+        run: sbcl --script test/run.lisp
+      - name: Check examples through the expander
+        run: |
+          set -e
+          sbcl --script expander.lisp examples/practice2_a.lisp -o /tmp/a.lisp
+          test "$(sbcl --script /tmp/a.lisp < examples/practice2_a.in)" = "$(cat examples/practice2_a.out)"
+          sbcl --script expander.lisp examples/practice2_i.lisp -o /tmp/i.lisp
+          test "$(sbcl --script /tmp/i.lisp < examples/practice2_i.in)" = "$(cat examples/practice2_i.out)"
+          sbcl --script expander.lisp examples/practice2_k.lisp -o /tmp/k.lisp
+          test "$(sbcl --script /tmp/k.lisp < examples/practice2_k.in 2>/dev/null)" = "$(cat examples/practice2_k.out)"

@@ -1,0 +1,33 @@
+(in-package :ac-library)
+
+(defstruct (fenwick-tree (:constructor %make-fenwick-tree (n data))
+                         (:conc-name %fenwick-tree-)
+                         (:copier nil))
+  (n 0 :type fixnum)
+  (data #() :type simple-vector))
+
+(defun make-fenwick-tree (n)
+  (assert (<= 0 n))
+  (%make-fenwick-tree n (make-array n :initial-element 0)))
+
+(defun fenwick-tree-add (fw p x)
+  (let ((n (%fenwick-tree-n fw))
+        (data (%fenwick-tree-data fw)))
+    (assert (and (<= 0 p) (< p n)))
+    (incf p)
+    (loop while (<= p n)
+          do (setf (svref data (1- p)) (+ (svref data (1- p)) x))
+             (incf p (logand p (- p))))
+    fw))
+
+(defun %fenwick-tree-prefix (fw r)
+  (let ((data (%fenwick-tree-data fw))
+        (s 0))
+    (loop while (> r 0)
+          do (setf s (+ s (svref data (1- r))))
+             (decf r (logand r (- r))))
+    s))
+
+(defun fenwick-tree-sum (fw l r)
+  (assert (and (<= 0 l) (<= l r) (<= r (%fenwick-tree-n fw))))
+  (- (%fenwick-tree-prefix fw r) (%fenwick-tree-prefix fw l)))
