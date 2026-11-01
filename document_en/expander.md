@@ -16,9 +16,11 @@ sbcl --script expander.lisp main.lisp -o combined.lisp
 * Write `acl-include` at the top level of your file. The expander follows parentheses, block
   comments, `;` comments, strings, character literals and `|...|` symbol names, and only
   expands an `acl-include` that is outside all of them.
-* An `acl-include` nested inside another form (for example inside a `let` or a quoted list)
-  is not expanded: the line is copied as is and a warning with its line number is printed to
-  standard error. An `acl-include` inside a comment, a string or a `|...|` symbol name is
+* An `acl-include` nested inside another form (for example inside a `let` or a quoted list),
+  or one that follows a pending reader prefix (`'`, `` ` ``, `,`, `#'`, `#.`, or a `#+` / `#-`
+  feature conditional, even on the previous line), is not expanded: the line is copied as is and
+  a warning with its line number is printed to standard error. Feature conditionals cannot
+  apply to a whole expanded library, so do not put `#+` / `#-` in front of `acl-include`. An `acl-include` inside a comment, a string or a `|...|` symbol name is
   copied as is without a warning.
 * An `acl-include` form must be the first thing on its line (indentation is fine) and must fit
   on that one line.

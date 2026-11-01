@@ -107,6 +107,21 @@
   (check-output "parens-in-literals-do-not-hide-include"
                 (format nil "(defvar *c* (list #\\( \"((\" '|(|))~%(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%")
                 "1")
+  (check-output "quoted-include-on-next-line-is-not-expanded"
+                (format nil "(acl-include :dsu)~%(defvar *q* '~%(acl-include :math))~%(princ (list *q* (fboundp 'pow-mod)))~%")
+                "((ACL-INCLUDE MATH) NIL)")
+  (check-output "quote-prefix-alone-on-previous-line"
+                (format nil "(acl-include :dsu)~%(defvar *q* (list~%'~%(acl-include :math)))~%(princ (fboundp 'pow-mod))~%")
+                "NIL")
+  (check-output "top-level-quote-prefix-before-include"
+                (format nil "(acl-include :dsu)~%'~%(acl-include :math)~%(princ (fboundp 'pow-mod))~%")
+                "NIL")
+  (check-output "feature-conditional-before-include"
+                (format nil "(acl-include :dsu)~%#-sbcl~%(acl-include :math)~%#+sbcl~%(acl-include :scc)~%(princ (list (fboundp 'pow-mod) (fboundp 'make-scc-graph)))~%")
+                "(NIL NIL)")
+  (check-output "completed-forms-do-not-block-include"
+                (format nil "(defvar *a* 'x) (defvar *b* #'car) (defvar *c* #+sbcl 1 #-sbcl 2)~%#+sbcl (defvar *d* 3)~%(defvar *e* `(1 ,*a*))~%(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%")
+                "1")
   (format t "~D failures~%" *failures*)
   (sb-ext:exit :code (if (zerop *failures*) 0 1)))
 
