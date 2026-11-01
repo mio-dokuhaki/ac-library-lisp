@@ -40,7 +40,7 @@
          (or (= (length trimmed) 12)
              (member (char trimmed 12) '(#\Space #\Tab #\) #\Newline))))))
 
-(defun scan-line (line depth mode)
+(defun scan-line (line depth mode parens)
   (let ((i 0) (n (length line)))
     (flet ((at (k c) (and (< (+ i k) n) (char= (char line (+ i k)) c))))
       (loop while (< i n)
@@ -64,8 +64,10 @@
                    ((and (char= c #\#) (at 1 #\\)) (incf i 3))
                    ((char= c #\\) (incf i 2))
                    ((char= c #\|) (setf mode :pipe) (incf i))
+                   ((char= c #\() (incf parens) (incf i))
+                   ((char= c #\)) (setf parens (max 0 (1- parens))) (incf i))
                    (t (incf i)))))))
-  (values depth mode))
+  (values depth mode parens))
 
 (defun parse-include (line)
   (let ((form (let ((*package* (find-package :acl-expander))
@@ -97,12 +99,18 @@
   (let ((emitted '())
         (base-emitted nil)
         (depth 0)
-        (mode nil))
+        (mode nil)
+        (parens 0))
     (with-output-to-string (out)
       (with-input-from-string (in input)
         (loop for line = (read-line in nil)
+              for lineno from 1
               while line
-              do (if (and (= depth 0) (null mode) (include-line-p line))
+              do (when (and (= depth 0) (null mode) (> parens 0) (include-line-p line))
+                   (format *error-output*
+                           "expander: warning: line ~D: acl-include inside another form is not expanded; move it to the top level~%"
+                           lineno))
+                 (if (and (= depth 0) (null mode) (= parens 0) (include-line-p line))
                      (let ((needed (remove-if (lambda (k) (member k emitted))
                                               (closure (parse-include line)))))
                        (when (or needed (not base-emitted))
@@ -120,7 +128,7 @@
                            (push k emitted))
                          (format out "(in-package :cl-user)~%(use-package :ac-library)~%")))
                      (progn
-                       (multiple-value-setq (depth mode) (scan-line line depth mode))
+                       (multiple-value-setq (depth mode parens) (scan-line line depth mode parens))
                        (write-string line out)
                        (terpri out))))))))
 

@@ -101,6 +101,12 @@
   (check-output "include-inside-multiline-pipe-symbol"
                 (format nil "(defvar |multi~%(acl-include :math)~%line| 1)~%(acl-include :dsu)~%(princ (dsu-same (make-dsu 2) 1 1))~%")
                 "T")
+  (check-output "nested-include-is-not-expanded"
+                (format nil "(acl-include :dsu)~%(defvar *x* (list~%(acl-include :math)~%))~%(princ (list (dsu-size (make-dsu 2) 0) (fboundp 'pow-mod)))~%")
+                "(1 NIL)")
+  (check-output "parens-in-literals-do-not-hide-include"
+                (format nil "(defvar *c* (list #\\( \"((\" '|(|))~%(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%")
+                "1")
   (format t "~D failures~%" *failures*)
   (sb-ext:exit :code (if (zerop *failures*) 0 1)))
 
