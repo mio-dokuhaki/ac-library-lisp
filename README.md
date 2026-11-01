@@ -56,6 +56,11 @@ sbcl --script combined.lisp < input.txt
 `(use-package :ac-library)`, so it can be submitted as is. Use `(acl-include :all)` to include
 everything.
 
+Write each `acl-include` at the top level, on a single line of its own. An `acl-include` inside
+another form, after a reader prefix such as `'` or `#+`, or inside a comment or string is not
+expanded (the expander prints a warning for the first two cases). See
+[`document_en/expander.md`](document_en/expander.md) for the exact rules.
+
 Expander options:
 
 | Option | Meaning |
@@ -103,8 +108,8 @@ sbcl --script test/expander-test.lisp
 
 The first command checks every module against brute-force implementations on random inputs.
 The second checks the expander: each module expanded on its own must compile with no undefined
-references, and `acl-include` written inside comments, strings or `|...|` symbols must be
-ignored. The unit tests can also be run with `(asdf:test-system :ac-library)`, which signals an
+references, and `acl-include` written inside comments, strings, `|...|` symbols, other forms,
+or after a reader prefix such as `'` or `#+` must not be expanded. The unit tests can also be run with `(asdf:test-system :ac-library)`, which signals an
 error when a test fails. Both scripts run on GitHub Actions.
 
 ## License
@@ -129,6 +134,8 @@ sbcl --script expander.lisp main.lisp -o combined.lisp
 
 で展開した `combined.lisp` を提出してください。`(acl-include :all)` で全モジュールを展開します。
 
+`acl-include` はトップレベルに、それだけで 1 行に書いてください。他のフォームの中、`'` や `#+` などのリーダー記号の直後、コメントや文字列の中にある `acl-include` は展開されません（前の 2 つの場合は警告が表示されます）。詳しいルールは [`document_en/expander.md`](document_en/expander.md) にあります。
+
 ### C++ 版との違い
 
 * 添字は 0-indexed、区間は半開区間 `[l, r)` で ACL と同じです。
@@ -144,7 +151,7 @@ sbcl --script test/run.lisp
 sbcl --script test/expander-test.lisp
 ```
 
-1つ目は全モジュールをランダム入力で愚直解と比較します。2つ目は expander のテストで、各モジュールを単体で展開しても未定義関数なくコンパイルできること、コメント・文字列・`|...|` シンボルの中の `acl-include` が無視されることを確認します。
+1つ目は全モジュールをランダム入力で愚直解と比較します。2つ目は expander のテストで、各モジュールを単体で展開しても未定義関数なくコンパイルできること、コメント・文字列・`|...|` シンボル・他のフォームの中や、`'` や `#+` などの直後にある `acl-include` が展開されないことを確認します。
 `(asdf:test-system :ac-library)` でもテストを実行でき、失敗するとエラーになります。どちらも GitHub Actions で実行されます。
 
 ### ライセンス
