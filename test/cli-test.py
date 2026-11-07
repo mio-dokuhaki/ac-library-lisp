@@ -139,6 +139,19 @@ class CliIntegration(unittest.TestCase):
         self.assertEqual(list(self.temp_root.iterdir()), [])
         self.assertEqual((self.problem / "main.lisp").read_text(), original)
 
+    def test_uppercase_contest_and_task_ids_preserved_through_submit(self):
+        url = "https://atcoder.jp/contests/chokudai_S001/tasks/chokudai_S001_a"
+        result = self.run_cli("new", url, self.problem)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.problem / "problem-url.txt").read_text().strip(), url)
+        (self.problem / "main.lisp").write_text(SOLUTION)
+        result = self.run_cli("submit", self.problem)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = self.events()
+        self.assertEqual([entry["args"][0] for entry in events], ["download", "test", "submit"])
+        self.assertIn(url, events[0]["args"])
+        self.assertIn(url, events[-1]["args"])
+
     def test_failed_sample_aborts_submit(self):
         self.prepare()
         env = self.env.copy()

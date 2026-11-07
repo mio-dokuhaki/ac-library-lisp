@@ -30,6 +30,7 @@
 (defun valid-component-p (s)
   (and (plusp (length s))
        (every (lambda (c) (or (and (char>= c #\a) (char<= c #\z))
+                              (and (char>= c #\A) (char<= c #\Z))
                               (and (char>= c #\0) (char<= c #\9))
                               (member c '(#\_ #\-)))) s)))
 
