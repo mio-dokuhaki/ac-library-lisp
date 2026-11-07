@@ -54,6 +54,31 @@ elif command == "test":
         sys.exit(1)
 '''
 
+FAKE_BROWSER_COOKIE3 = r'''import http.cookiejar, json, os, time
+from pathlib import Path
+
+def __getattr__(browser):
+    def load(*, cookie_file, domain_name):
+        with open(os.environ['FAKE_BROWSER_LOG'], 'a') as output:
+            output.write(json.dumps({'browser': browser, 'cookie_file': cookie_file,
+                                     'domain_name': domain_name}) + '\n')
+        result = http.cookiejar.CookieJar()
+        def add(domain, name, value, expiry=None):
+            result.set_cookie(http.cookiejar.Cookie(
+                0, name, value, None, False, domain, domain.startswith('.'),
+                domain.startswith('.'), '/', True, True, expiry or int(time.time()) + 3600,
+                False, None, None, {}, False))
+        if os.environ.get('FAKE_BROWSER_MODE') != 'missing':
+            add('.atcoder.jp', 'REVEL_SESSION', 'fake-browser-token')
+        if os.environ.get('FAKE_BROWSER_MODE') == 'ambiguous':
+            add('atcoder.jp', 'REVEL_SESSION', 'fake-other-session')
+        add('.evil-atcoder.jp', 'bad-domain', 'must-not-import')
+        add('.atcoder.jp', 'csrf_token', 'fake-csrf')
+        add('.atcoder.jp', 'expired', 'must-not-import', int(time.time()) - 3600)
+        return result
+    return load
+'''
+
 
 class CliIntegration(unittest.TestCase):
     def setUp(self):
@@ -79,7 +104,7 @@ class CliIntegration(unittest.TestCase):
                         FAKE_OJ_LOG=str(self.log), FAKE_INPUT=SAMPLE_INPUT,
                         FAKE_OUTPUT=SAMPLE_OUTPUT, TMPDIR=str(self.temp_root),
                         XDG_DATA_HOME=str(self.data), FAKE_CLIPBOARD=str(self.clipboard),
-                        WAYLAND_DISPLAY="test-display")
+                        WAYLAND_DISPLAY="test-display", PYTHONDONTWRITEBYTECODE="1")
         self.problem = self.base / "problem with spaces"
 
     def run_cli(self, *args, env=None):
@@ -282,6 +307,101 @@ class CliIntegration(unittest.TestCase):
         self.assertNotIn("fake-invalid", result.stdout + result.stderr)
         self.assertEqual(jar_path.read_bytes(), before)
         self.assertEqual(sorted(p.name for p in jar_path.parent.iterdir()), ["cookie.jar"])
+
+    def browser_env(self):
+        modules = self.base / "fake browser modules"
+        modules.mkdir()
+        (modules / "browser_cookie3.py").write_text(FAKE_BROWSER_COOKIE3)
+        env = self.env.copy()
+        env["PYTHONPATH"] = str(modules)
+        env["FAKE_BROWSER_LOG"] = str(self.base / "browser.jsonl")
+        return env
+
+    def chromium_database(self, database):
+        with sqlite3.connect(database) as db:
+            db.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, expires_utc INTEGER, top_frame_site_key TEXT)")
+            db.execute("INSERT INTO cookies VALUES ('.atcoder.jp', 'REVEL_SESSION', 0, '')")
+
+    def test_browser_import_uses_requested_browser_and_checks_session(self):
+        env = self.browser_env()
+        database = self.base / "cookie database with spaces"
+        self.chromium_database(database)
+        for browser in ("edge", "chrome", "chromium", "brave", "opera", "opera_gx",
+                        "vivaldi"):
+            with self.subTest(browser=browser):
+                result = self.run_cli("login", "--browser", browser, "--profile", database, env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("fake-browser-token", result.stdout + result.stderr)
+        records = [json.loads(line) for line in (self.base / "browser.jsonl").read_text().splitlines()]
+        self.assertEqual([record["browser"] for record in records],
+                         ["edge", "chrome", "chromium", "brave", "opera", "opera_gx",
+                          "vivaldi"])
+        self.assertTrue(all(record["cookie_file"] == str(database) and
+                            record["domain_name"] == "atcoder.jp" for record in records))
+        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        jar = LWPCookieJar(str(jar_path))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        cookies = {(cookie.domain, cookie.name): cookie.value for cookie in jar}
+        self.assertEqual(cookies[(".atcoder.jp", "REVEL_SESSION")], "fake-browser-token")
+        self.assertNotIn((".evil-atcoder.jp", "bad-domain"), cookies)
+        self.assertNotIn((".atcoder.jp", "expired"), cookies)
+        self.assertEqual(jar_path.stat().st_mode & 0o077, 0)
+        self.assertNotIn("fake-browser-token", json.dumps(self.events()))
+
+    def test_browser_bad_or_ambiguous_session_preserves_existing_jar(self):
+        env = self.browser_env()
+        database = self.base / "Cookies"
+        self.chromium_database(database)
+        result = self.run_cli("login", "--browser", "edge", "--profile", database, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        before = jar_path.read_bytes()
+        for mode in ("missing", "ambiguous", "rejected"):
+            with self.subTest(mode=mode):
+                failing_env = env.copy()
+                if mode == "rejected":
+                    failing_env["FAKE_OJ_FAIL"] = "login"
+                else:
+                    failing_env["FAKE_BROWSER_MODE"] = mode
+                result = self.run_cli("login", "--browser", "edge", "--profile", database, env=failing_env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("fake-browser-token", result.stdout + result.stderr)
+                self.assertEqual(jar_path.read_bytes(), before)
+                self.assertEqual(sorted(p.name for p in jar_path.parent.iterdir()), ["cookie.jar"])
+
+    def test_browser_rejects_partitioned_and_duplicate_cookies(self):
+        env = self.browser_env()
+        database = self.base / "Cookies"
+        self.chromium_database(database)
+        for host, name, partition in ((".atcoder.jp", "other", "https://example.org"),
+                                      ("atcoder.jp", "REVEL_SESSION", "")):
+            with self.subTest(name=name, partition=partition):
+                with sqlite3.connect(database) as db:
+                    db.execute("INSERT INTO cookies VALUES (?, ?, 0, ?)", (host, name, partition))
+                result = self.run_cli("login", "--browser", "edge", "--profile", database, env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.events(), [])
+                self.assertFalse((self.data / "online-judge-tools" / "cookie.jar").exists())
+                with sqlite3.connect(database) as db:
+                    db.execute("DELETE FROM cookies WHERE host_key=? AND name=? AND top_frame_site_key=?",
+                               (host, name, partition))
+
+    def test_firefox_browser_option_uses_native_importer(self):
+        profile = self.base / "Firefox profile"
+        profile.mkdir()
+        with sqlite3.connect(profile / "cookies.sqlite") as db:
+            db.execute("CREATE TABLE moz_cookies (host TEXT, path TEXT, name TEXT, "
+                       "value TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, originAttributes TEXT)")
+            db.execute("INSERT INTO moz_cookies VALUES ('.atcoder.jp', '/', 'REVEL_SESSION', 'fake-firefox', ?, 1, 1, '')",
+                       (int(time.time()) + 3600,))
+        for browser in ("firefox", "librewolf"):
+            with self.subTest(browser=browser):
+                result = self.run_cli("login", "--browser", browser, "--profile", profile)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("fake-firefox", result.stdout + result.stderr)
+                jar = LWPCookieJar(str(self.data / "online-judge-tools" / "cookie.jar"))
+                jar.load(ignore_discard=True, ignore_expires=True)
+                self.assertEqual(next(cookie.value for cookie in jar if cookie.name == "REVEL_SESSION"), "fake-firefox")
 
 
 if __name__ == "__main__":

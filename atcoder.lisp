@@ -14,6 +14,7 @@
   new URL [DIR]            Create a problem directory and download samples~%
   login [--check]          Log in or check status without opening a browser~%
   login --firefox PROFILE Import an existing Firefox login and check it~%
+  login --browser NAME --profile PATH  Import a browser login and check it~%
   test [DIR]               Expand, compile and test the solution (default: .)~%
   copy [DIR]               Copy expanded code to the clipboard~%
   submit [DIR] [--language ID]  Test and submit (default language: SBCL)~%"))
@@ -145,6 +146,20 @@
             (t (setf dir arg))))
     (values (or dir ".") language)))
 
+(defun browser-python ()
+  (let* ((data (or (uiop:getenv "XDG_DATA_HOME")
+                   (namestring (merge-pathnames ".local/share/" (user-homedir-pathname)))))
+         (python (merge-pathnames "ac-lisp/venv/bin/python" (directory-path data))))
+    (or (uiop:getenv "AC_LISP_PYTHON")
+        (and (probe-file python) (namestring python))
+        "python3")))
+
+(defun browser-login (browser profile)
+  (if (member browser '("firefox" "librewolf") :test #'string=)
+      (run "python3" (list (namestring (merge-pathnames "tools/import-firefox-cookies.py" *root*)) profile))
+      (run (browser-python) (list (namestring (merge-pathnames "tools/import-browser-cookies.py" *root*))
+                                  browser profile))))
+
 (defun main (args)
   (let ((command (pop args)))
     (cond
@@ -158,7 +173,10 @@
              ((and (= (length args) 2) (string= (first args) "--firefox"))
               (run "python3" (list (namestring (merge-pathnames "tools/import-firefox-cookies.py" *root*))
                                    (second args))))
-             (t (fail "login accepts --check or --firefox PROFILE"))))
+             ((and (= (length args) 4) (string= (first args) "--browser")
+                   (string= (third args) "--profile"))
+              (browser-login (second args) (fourth args)))
+             (t (fail "login accepts --check, --firefox PROFILE, or --browser NAME --profile PATH"))))
       ((string= command "test")
        (unless (<= (length args) 1) (fail "test accepts [DIR]"))
        (let ((dir (or (first args) ".")))

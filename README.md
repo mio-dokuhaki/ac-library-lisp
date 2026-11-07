@@ -59,12 +59,26 @@ language selector is `SBCL`; use `--language ID` when necessary. The language is
 selected from the contest's current list rather than a fixed ID.
 
 AtCoder uses Turnstile on its login page, so ordinary `oj login` may fail. Log in
-to AtCoder in Firefox first, then import that profile's session and check it:
+in your browser first, then import that profile's session and check it. Firefox,
+LibreWolf, Edge, Chrome, Chromium, Brave, Opera, Opera GX and Vivaldi are supported:
 
 ```sh
-ac-lisp login --firefox ~/.config/mozilla/firefox/YOUR_PROFILE
+ac-lisp login --browser edge --profile ~/.config/microsoft-edge/Default
+# For Firefox: ac-lisp login --browser firefox --profile ~/.mozilla/firefox/YOUR_PROFILE
 ac-lisp login --check
 ```
+
+Chromium-based browsers require `browser-cookie3` and an unlocked system keyring.
+One way to install the dependency in an isolated environment is:
+
+```sh
+uv venv ~/.local/share/ac-lisp/venv
+uv pip install --python ~/.local/share/ac-lisp/venv/bin/python 'browser-cookie3==0.20.1'
+```
+
+Alternatively, install `browser-cookie3` in your Python environment and set
+`AC_LISP_PYTHON` to that interpreter. The importer validates the session before
+replacing AtCoder cookies in the `oj` jar, preserving cookies for other sites.
 
 The session cookie is a credential; keep the `oj` cookie jar private. AtCoder may
 also require Turnstile for submissions to finished contests. As with
@@ -202,12 +216,26 @@ ac-lisp submit
 コンテストの一覧から `SBCL` を選択し、必要なら `--language ID` で指定できます。
 
 AtCoder のログインには Turnstile があるため、通常の `oj login` が失敗する場合が
-あります。Firefox で先にログインし、そのプロファイルのセッションを取り込めます。
+あります。ブラウザで先にログインし、そのプロファイルのセッションを取り込めます。
+Firefox、LibreWolf、Edge、Chrome、Chromium、Brave、Opera、Opera GX、Vivaldi に対応しています。
 
 ```sh
-ac-lisp login --firefox ~/.config/mozilla/firefox/YOUR_PROFILE
+ac-lisp login --browser edge --profile ~/.config/microsoft-edge/Default
+# Firefox の場合: ac-lisp login --browser firefox --profile ~/.mozilla/firefox/YOUR_PROFILE
 ac-lisp login --check
 ```
+
+Chromium 系ブラウザでは `browser-cookie3` と、ロック解除されたシステムのキーリングが
+必要です。例えば専用環境には次のようにインストールできます。
+
+```sh
+uv venv ~/.local/share/ac-lisp/venv
+uv pip install --python ~/.local/share/ac-lisp/venv/bin/python 'browser-cookie3==0.20.1'
+```
+
+別の Python 環境を使う場合は `browser-cookie3` を導入し、その実行ファイルを
+`AC_LISP_PYTHON` で指定してください。セッションを検証してから `oj` の AtCoder 用
+Cookie を更新し、他サイトの Cookie は保持します。
 
 セッション Cookie は認証情報なので、`oj` の Cookie ファイルは他人に公開しないで
 ください。終了済みコンテストでは提出時にも Turnstile が必要な場合があり、
