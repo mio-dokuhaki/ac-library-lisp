@@ -79,6 +79,8 @@ uv pip install --python ~/.local/share/ac-lisp/venv/bin/python 'browser-cookie3=
 Alternatively, install `browser-cookie3` in your Python environment and set
 `AC_LISP_PYTHON` to that interpreter. The importer validates the session before
 replacing AtCoder cookies in the `oj` jar, preserving cookies for other sites.
+Firefox and LibreWolf imports use persistent cookies in `cookies.sqlite`; a
+session kept only in browser memory or session restore data cannot be imported.
 Avoid running other `oj` commands during an import: the importer detects changes
 before replacement, but cannot prevent a write between its final check and replacement.
 
@@ -240,7 +242,9 @@ uv pip install --python ~/.local/share/ac-lisp/venv/bin/python 'browser-cookie3=
 
 別の Python 環境を使う場合は `browser-cookie3` を導入し、その実行ファイルを
 `AC_LISP_PYTHON` で指定してください。セッションを検証してから `oj` の AtCoder 用
-Cookie を更新し、他サイトの Cookie は保持します。取り込み中は他の `oj` コマンドを
+Cookie を更新し、他サイトの Cookie は保持します。Firefox と LibreWolf は
+`cookies.sqlite` に保存された Cookie が対象で、メモリやセッション復元データにのみ
+保持されるセッションは取り込めません。取り込み中は他の `oj` コマンドを
 実行しないでください。更新前の変更は検知しますが、最終確認から置換までの間の
 書き込みは防げません。
 
