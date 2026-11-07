@@ -169,13 +169,16 @@ also works in the REPL.
 ```sh
 sbcl --script test/run.lisp
 sbcl --script test/expander-test.lisp
+python3 test/cli-test.py
 ```
 
 The first command checks every module against brute-force implementations on random inputs.
 The second checks the expander: each module expanded on its own must compile with no undefined
 references, and `acl-include` written inside comments, strings, `|...|` symbols, other forms,
 or after a reader prefix such as `'` or `#+` must not be expanded. The unit tests can also be run with `(asdf:test-system :ac-library)`, which signals an
-error when a test fails. Both scripts run on GitHub Actions.
+error when a test fails. The CLI tests use real SBCL and a local `oj` double to exercise
+sample testing, submission preparation, and browser session import without submitting.
+All three scripts run on GitHub Actions.
 
 ## License
 
@@ -274,10 +277,11 @@ sbcl --script expander.lisp main.lisp -o combined.lisp
 ```sh
 sbcl --script test/run.lisp
 sbcl --script test/expander-test.lisp
+python3 test/cli-test.py
 ```
 
 1つ目は全モジュールをランダム入力で愚直解と比較します。2つ目は expander のテストで、各モジュールを単体で展開しても未定義関数なくコンパイルできること、コメント・文字列・`|...|` シンボル・他のフォームの中や、`'` や `#+` などの直後にある `acl-include` が展開されないことを確認します。
-`(asdf:test-system :ac-library)` でもテストを実行でき、失敗するとエラーになります。どちらも GitHub Actions で実行されます。
+`(asdf:test-system :ac-library)` でもテストを実行でき、失敗するとエラーになります。3つ目は実際の SBCL と模擬 `oj` を使い、サンプルテスト、提出準備、ブラウザのセッション取り込みを検証します。3つとも GitHub Actions で実行されます。
 
 ### ライセンス
 
