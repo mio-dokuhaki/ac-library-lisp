@@ -85,6 +85,21 @@
                    (subseq s 0 (read-sequence s in))))))
     (report (null (search "(defun pow-mod" text)) name)))
 
+(defun check-compiled-solution ()
+  (let* ((file (expand "compiled-solution"
+                       (format nil "(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%")))
+         (fasl (merge-pathnames "compiled-solution.fasl" *work*))
+         (form (format nil "(multiple-value-bind (out warnings failure) (compile-file ~S :output-file ~S) (declare (ignore warnings)) (sb-ext:exit :code (if (and out (not failure)) 0 1)))"
+                       (namestring file) (namestring fasl))))
+    (multiple-value-bind (output code)
+        (run (list "--noinform" "--disable-debugger" "--eval" form))
+      (declare (ignore output))
+      (if (zerop code)
+          (multiple-value-bind (result load-code)
+              (run (list "--noinform" "--disable-debugger" "--load" (namestring fasl) "--quit"))
+            (report (and (zerop load-code) (string= result "1")) "compiled solution loads in a fresh process"))
+          (report nil "compiled solution loads in a fresh process")))))
+
 (defun check-prefix-completion ()
   (dolist (case `(("string-after-quote" "'\"text\"")
                   ("vector-after-quote" "'#(1 2)")
@@ -112,6 +127,7 @@
 
 (defun main ()
   (check-standalone-modules)
+  (check-compiled-solution)
   (check-prefix-completion)
   (check-output "convolution-ll-standalone"
                 (format nil "(acl-include :convolution)~%(let ((a (make-array 100 :initial-element 3)) (b (make-array 100 :initial-element 5))) (princ (aref (convolution-ll a b) 99)))~%")

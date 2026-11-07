@@ -200,7 +200,7 @@
                                          out)
                            (terpri out)
                            (push k emitted))
-                         (format out "(in-package :cl-user)~%(use-package :ac-library)~%")))
+                         (format out "(in-package :cl-user)~%(eval-when (:compile-toplevel :load-toplevel :execute) (use-package :ac-library))~%")))
                      (progn
                        (scan-line line state)
                        (write-string line out)

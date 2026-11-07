@@ -28,6 +28,55 @@ Full API references with constraints and complexities are in [`document_en/`](do
 
 ## Using it on AtCoder
 
+### Command-line workflow
+
+The `ac-lisp` CLI creates a problem directory, downloads samples, expands the library,
+compiles and tests the solution, and invokes `oj` to submit it. It requires SBCL,
+Python 3 and [online-judge-tools](https://github.com/online-judge-tools/oj). For
+example, with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv tool install --python 3.13 --with setuptools online-judge-tools
+ln -s /path/to/ac-library-lisp/bin/ac-lisp ~/.local/bin/ac-lisp
+```
+
+Make sure `~/.local/bin` is on your `PATH`. Keep the checkout in place: the symlink
+uses its expander and library sources.
+
+```sh
+ac-lisp new https://atcoder.jp/contests/practice2/tasks/practice2_a
+cd practice2_a
+# Edit main.lisp, including the ACL modules you need.
+ac-lisp test
+ac-lisp submit
+```
+
+`new URL [DIR]` saves the exact problem URL in `problem-url.txt` and refuses to
+overwrite an existing directory. `test [DIR]` expands the solution, compiles it
+with SBCL and runs the downloaded samples. `submit [DIR]` repeats the tests and
+passes the expanded source to `oj`, which asks for confirmation. The default
+language selector is `SBCL`; use `--language ID` when necessary. The language is
+selected from the contest's current list rather than a fixed ID.
+
+AtCoder uses Turnstile on its login page, so ordinary `oj login` may fail. Log in
+to AtCoder in Firefox first, then import that profile's session and check it:
+
+```sh
+ac-lisp login --firefox ~/.config/mozilla/firefox/YOUR_PROFILE
+ac-lisp login --check
+```
+
+The session cookie is a credential; keep the `oj` cookie jar private. AtCoder may
+also require Turnstile for submissions to finished contests. As with
+[acrust](https://github.com/okaponta/acrust), CLI submission cannot complete that
+challenge. Use `ac-lisp copy [DIR]` to copy the expanded solution, then paste it
+into the contest's submission page and complete the browser challenge. `copy`
+requires `wl-copy` on Wayland or `xclip` on X11. If a submission fails after the
+request was sent, check your AtCoder submission history before trying again: a
+network error can leave the outcome unknown.
+
+### Manual expansion
+
 AtCoder accepts a single source file, so the library is pasted into your solution by the
 expander. Write `acl-include` at the top of your file:
 
@@ -125,6 +174,50 @@ C++ と Python は使わず、ソースを1ファイルにまとめる expander 
 AtCoder で使われている SBCL を対象にしています。
 
 ### AtCoder での使い方
+
+`ac-lisp` コマンドを使うと、問題のサンプル取得、ライブラリの展開、コンパイルと
+テスト、提出をターミナルから行えます。SBCL、Python 3、
+[online-judge-tools](https://github.com/online-judge-tools/oj) が必要です。
+例えば uv を使う場合:
+
+```sh
+uv tool install --python 3.13 --with setuptools online-judge-tools
+ln -s /path/to/ac-library-lisp/bin/ac-lisp ~/.local/bin/ac-lisp
+```
+
+`~/.local/bin` を PATH に含めてください。シンボリックリンクは、このリポジトリの
+expander とライブラリを参照します。
+
+```sh
+ac-lisp new https://atcoder.jp/contests/practice2/tasks/practice2_a
+cd practice2_a
+# main.lisp を編集
+ac-lisp test
+ac-lisp submit
+```
+
+`new URL [DIR]` は問題 URL とサンプルを保存し、既存ディレクトリは上書きしません。
+`test [DIR]` は展開したコードを SBCL でコンパイルし、サンプルを実行します。
+`submit [DIR]` はテスト後に `oj` を呼び出し、確認を経て提出します。言語は
+コンテストの一覧から `SBCL` を選択し、必要なら `--language ID` で指定できます。
+
+AtCoder のログインには Turnstile があるため、通常の `oj login` が失敗する場合が
+あります。Firefox で先にログインし、そのプロファイルのセッションを取り込めます。
+
+```sh
+ac-lisp login --firefox ~/.config/mozilla/firefox/YOUR_PROFILE
+ac-lisp login --check
+```
+
+セッション Cookie は認証情報なので、`oj` の Cookie ファイルは他人に公開しないで
+ください。終了済みコンテストでは提出時にも Turnstile が必要な場合があり、
+[acrust](https://github.com/okaponta/acrust) と同様、CLI だけでは提出できません。
+その場合は `ac-lisp copy [DIR]` で展開コードをコピーし、ブラウザの提出画面に貼り付けて
+認証してください。コピーには Wayland では `wl-copy`、X11 では `xclip` が必要です。
+送信後にエラーが出た場合は、再送前に提出履歴を確認してください。通信エラーでも
+提出自体は受理されていることがあります。
+
+手動で展開することもできます。
 
 解答ファイルの先頭に `(acl-include :dsu)` のように使いたいモジュールを書き、
 
