@@ -1,0 +1,37 @@
+language: ja-JP
+
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    drafts: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+  path_filters:
+    - "**/*.out"
+  path_instructions:
+    - path: "**/*.lisp"
+      instructions: |
+        Check ACL compatibility, edge cases and complexity. For the expander and
+        solutions, verify both SBCL script execution and compilation followed by
+        loading in a fresh process, including compile-time package availability.
+    - path: "atcoder.lisp"
+      instructions: |
+        Check exact problem and language selection, sample validation, failure
+        handling, temporary files and ambiguous submission results. Avoid suggesting
+        automatic retries that could cause duplicate submissions.
+    - path: "tools/**"
+      instructions: |
+        Check browser profile isolation, credential confidentiality, cookie expiry,
+        safe replacement and preservation of unrelated sessions.
+    - path: "test/**"
+      instructions: |
+        Check meaningful coverage of failure cases and ensure tests isolate HOME,
+        credentials, network calls and other persistent user data.
+    - path: "README.md"
+      instructions: |
+        Check that the English and Japanese instructions agree and accurately
+        describe dependencies, commands and AtCoder limitations.
