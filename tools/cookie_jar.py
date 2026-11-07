@@ -2,6 +2,7 @@ import http.cookiejar
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -9,9 +10,18 @@ class ImportProblem(Exception):
     pass
 
 
+def oj_cookie_path():
+    if sys.platform == 'darwin':
+        base = Path.home() / 'Library' / 'Application Support'
+    elif os.name == 'posix':
+        base = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share')))
+    else:
+        raise ImportProblem('browser cookie import is supported on Unix systems only')
+    return base / 'online-judge-tools' / 'cookie.jar'
+
+
 def save_validated(cookies):
-    base = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share')
-    jar_path = base / 'online-judge-tools' / 'cookie.jar'
+    jar_path = oj_cookie_path()
     jar_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if jar_path.is_symlink():
         raise ImportProblem('refusing to replace a symlinked cookie jar')

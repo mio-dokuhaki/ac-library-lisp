@@ -174,7 +174,8 @@
     (values (or dir ".") language)))
 
 (defun browser-python ()
-  (let* ((data (or (uiop:getenv "XDG_DATA_HOME")
+  (let* ((xdg (uiop:getenv "XDG_DATA_HOME"))
+         (data (if (and xdg (plusp (length xdg))) xdg
                    (namestring (merge-pathnames ".local/share/" (user-homedir-pathname)))))
          (python (merge-pathnames "ac-lisp/venv/bin/python" (directory-path data))))
     (or (uiop:getenv "AC_LISP_PYTHON")
@@ -183,7 +184,7 @@
 
 (defun browser-login (browser profile)
   (if (member browser '("firefox" "librewolf") :test #'string=)
-      (run "python3" (list (namestring (merge-pathnames "tools/import-firefox-cookies.py" *root*)) profile))
+      (run (browser-python) (list (namestring (merge-pathnames "tools/import-firefox-cookies.py" *root*)) profile))
       (run (browser-python) (list (namestring (merge-pathnames "tools/import-browser-cookies.py" *root*))
                                   browser profile))))
 
@@ -198,8 +199,8 @@
        (cond ((or (null args) (equal args '("--check")))
               (run "oj" (append (list "login" "https://atcoder.jp/" "--use-browser" "never") args)))
              ((and (= (length args) 2) (string= (first args) "--firefox"))
-              (run "python3" (list (namestring (merge-pathnames "tools/import-firefox-cookies.py" *root*))
-                                   (second args))))
+              (run (browser-python) (list (namestring (merge-pathnames "tools/import-firefox-cookies.py" *root*))
+                                           (second args))))
              ((and (= (length args) 4) (string= (first args) "--browser")
                    (string= (third args) "--profile"))
               (browser-login (second args) (fourth args)))

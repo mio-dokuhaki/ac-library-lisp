@@ -298,6 +298,81 @@ class CliIntegration(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.events(), [])
 
+    def test_cookie_jar_follows_oj_when_xdg_data_home_empty_or_unset(self):
+        profile = self.base / "profile"
+        profile.mkdir()
+        with sqlite3.connect(profile / "cookies.sqlite") as db:
+            db.execute("CREATE TABLE moz_cookies (host TEXT, path TEXT, name TEXT, "
+                       "value TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, originAttributes TEXT)")
+            db.execute("INSERT INTO moz_cookies VALUES ('.atcoder.jp', '/', 'REVEL_SESSION', 'fake-xdg', ?, 1, 1, '')",
+                       (int(time.time()) + 3600,))
+        home = self.base / "isolated home"
+        home.mkdir()
+        for value, expected in (("", self.base / "online-judge-tools" / "cookie.jar"),
+                                (None, home / ".local" / "share" / "online-judge-tools" / "cookie.jar")):
+            with self.subTest(xdg=value):
+                env = self.env.copy()
+                env["HOME"] = str(home)
+                if value is None:
+                    env.pop("XDG_DATA_HOME", None)
+                else:
+                    env["XDG_DATA_HOME"] = value
+                result = self.run_cli("login", "--firefox", profile, env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("fake-xdg", result.stdout + result.stderr)
+                self.assertTrue(expected.is_file(), str(expected))
+                jar = LWPCookieJar(str(expected))
+                jar.load(ignore_discard=True, ignore_expires=True)
+                self.assertEqual(next(cookie.value for cookie in jar if cookie.name == "REVEL_SESSION"), "fake-xdg")
+
+    def test_cookie_jar_macos_path_ignores_xdg(self):
+        env = self.env.copy()
+        env["HOME"] = str(self.base / "mac home")
+        env["XDG_DATA_HOME"] = str(self.base / "ignored")
+        script = ("import sys; sys.path.insert(0, sys.argv[1]); import cookie_jar; "
+                  "sys.platform='darwin'; print(cookie_jar.oj_cookie_path())")
+        result = subprocess.run(["python3", "-B", "-c", script, str(ROOT / "tools")],
+                                cwd=self.base, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = Path(env["HOME"]) / "Library" / "Application Support" / "online-judge-tools" / "cookie.jar"
+        self.assertEqual(result.stdout.strip(), str(expected))
+
+    def test_cookie_jar_relative_path_matches_oj_appdirs(self):
+        env = self.env.copy()
+        env["XDG_DATA_HOME"] = "relative data"
+        script = "import sys; sys.path.insert(0, sys.argv[1]); import cookie_jar; print(cookie_jar.oj_cookie_path())"
+        result = subprocess.run(["python3", "-B", "-c", script, str(ROOT / "tools")],
+                                cwd=self.base, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "relative data/online-judge-tools/cookie.jar")
+
+    def test_firefox_import_uses_configured_python(self):
+        profile = self.base / "profile"
+        profile.mkdir()
+        with sqlite3.connect(profile / "cookies.sqlite") as db:
+            db.execute("CREATE TABLE moz_cookies (host TEXT, path TEXT, name TEXT, "
+                       "value TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, originAttributes TEXT)")
+            db.execute("INSERT INTO moz_cookies VALUES ('.atcoder.jp', '/', 'REVEL_SESSION', 'fake-python', ?, 1, 1, '')",
+                       (int(time.time()) + 3600,))
+        wrapper = self.bin / "python-wrapper"
+        wrapper.write_text('#!/usr/bin/env python3\nimport os, pathlib, sys\n'
+                           'pathlib.Path(os.environ["PYTHON_MARKER"]).write_text("invoked")\n'
+                           'os.execv(sys.executable, [sys.executable] + sys.argv[1:])\n')
+        wrapper.chmod(0o755)
+        env = self.env.copy()
+        env["AC_LISP_PYTHON"] = str(wrapper)
+        env["PYTHON_MARKER"] = str(self.base / "python-marker")
+        for args in (("--firefox", profile), ("--browser", "firefox", "--profile", profile),
+                     ("--browser", "librewolf", "--profile", profile)):
+            with self.subTest(args=args):
+                marker = Path(env["PYTHON_MARKER"])
+                if marker.exists():
+                    marker.unlink()
+                result = self.run_cli("login", *args, env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(marker.is_file())
+                self.assertNotIn("fake-python", result.stdout + result.stderr)
+
     def test_interactive_login_uses_terminal(self):
         result = self.run_cli("login")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
