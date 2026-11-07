@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -109,14 +110,23 @@ class CliIntegration(unittest.TestCase):
         copy.chmod(0o755)
         self.clipboard = self.base / "clipboard"
         self.data = self.base / "user data"
+        self.home = self.base / "sandboxed-home"
+        self.home.mkdir()
+        jar_base = self.home / "Library" / "Application Support" if sys.platform == "darwin" else self.data
+        self.jar_path = jar_base / "online-judge-tools" / "cookie.jar"
         self.temp_root = self.base / "temporary files"
         self.temp_root.mkdir()
         self.env = os.environ.copy()
-        self.env.update(PATH=str(self.bin) + os.pathsep + self.env.get("PATH", ""),
+        self.env.pop("AC_LISP_PYTHON", None)
+        self.env.pop("PYTHONPATH", None)
+        self.env.update(HOME=str(self.home),
+                        PATH=str(self.bin) + os.pathsep + self.env.get("PATH", ""),
                         FAKE_OJ_LOG=str(self.log), FAKE_INPUT=SAMPLE_INPUT,
                         FAKE_OUTPUT=SAMPLE_OUTPUT, TMPDIR=str(self.temp_root),
-                        XDG_DATA_HOME=str(self.data), FAKE_CLIPBOARD=str(self.clipboard),
-                        WAYLAND_DISPLAY="test-display", PYTHONDONTWRITEBYTECODE="1")
+                        XDG_DATA_HOME=str(self.data), XDG_CONFIG_HOME=str(self.base / "config"),
+                        XDG_CACHE_HOME=str(self.base / "cache"), XDG_STATE_HOME=str(self.base / "state"),
+                        FAKE_CLIPBOARD=str(self.clipboard), WAYLAND_DISPLAY="test-display",
+                        PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
         self.problem = self.base / "problem with spaces"
 
     def run_cli(self, *args, env=None):
@@ -271,7 +281,7 @@ class CliIntegration(unittest.TestCase):
                        (int(time.time()) + 3600,))
             db.execute("INSERT INTO moz_cookies VALUES (4, '^userContextId=1', 'different-container', 'unwanted', '.atcoder.jp', '/', ?, 1, 1)",
                        (int(time.time()) + 3600,))
-        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        jar_path = self.jar_path
         jar_path.parent.mkdir(parents=True)
         jar = LWPCookieJar(str(jar_path))
         jar.set_cookie(Cookie(0, 'other', 'preserved', None, False, 'example.org', False,
@@ -310,6 +320,7 @@ class CliIntegration(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.events(), [])
 
+    @unittest.skipIf(sys.platform == "darwin", "oj ignores XDG_DATA_HOME on macOS")
     def test_cookie_jar_follows_oj_when_xdg_data_home_empty_or_unset(self):
         profile = self.base / "profile"
         profile.mkdir()
@@ -349,6 +360,29 @@ class CliIntegration(unittest.TestCase):
         expected = Path(env["HOME"]) / "Library" / "Application Support" / "online-judge-tools" / "cookie.jar"
         self.assertEqual(result.stdout.strip(), str(expected))
 
+    def test_macos_save_uses_isolated_home_and_fake_oj(self):
+        script = '''import http.cookiejar, sys, time
+sys.path.insert(0, sys.argv[1])
+import cookie_jar
+sys.platform = "darwin"
+cookie = http.cookiejar.Cookie(0, "REVEL_SESSION", "fake-macos", None, False,
+    ".atcoder.jp", True, True, "/", True, True, int(time.time()) + 3600,
+    False, None, None, {}, False)
+cookie_jar.save_validated([cookie])
+'''
+        result = subprocess.run(["python3", "-B", "-c", script, str(ROOT / "tools")],
+                                cwd=self.base, env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("fake-macos", result.stdout + result.stderr)
+        expected = self.home / "Library" / "Application Support" / "online-judge-tools" / "cookie.jar"
+        jar = LWPCookieJar(str(expected))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        self.assertEqual(next(cookie.value for cookie in jar if cookie.name == "REVEL_SESSION"), "fake-macos")
+        self.assertEqual(expected.stat().st_mode & 0o077, 0)
+        self.assertEqual([entry["args"][0] for entry in self.events()], ["login"])
+        self.assertFalse((self.data / "online-judge-tools" / "cookie.jar").exists())
+
+    @unittest.skipIf(sys.platform == "darwin", "oj ignores XDG_DATA_HOME on macOS")
     def test_cookie_jar_relative_path_matches_oj_appdirs(self):
         env = self.env.copy()
         env["XDG_DATA_HOME"] = "relative data"
@@ -404,7 +438,7 @@ class CliIntegration(unittest.TestCase):
         result = self.run_cli("login", "--firefox", profile)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.events(), [])
-        self.assertFalse((self.data / "online-judge-tools" / "cookie.jar").exists())
+        self.assertFalse((self.jar_path).exists())
 
     def test_firefox_new_schema_uses_millisecond_expiry(self):
         profile = self.base / "modern profile"
@@ -420,7 +454,7 @@ class CliIntegration(unittest.TestCase):
                        ((now - 3600) * 1000,))
         result = self.run_cli("login", "--firefox", profile)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        jar = LWPCookieJar(str(self.data / "online-judge-tools" / "cookie.jar"))
+        jar = LWPCookieJar(str(self.jar_path))
         jar.load(ignore_discard=True, ignore_expires=True)
         cookies = {cookie.name: cookie for cookie in jar}
         self.assertNotIn("expired", cookies)
@@ -434,7 +468,7 @@ class CliIntegration(unittest.TestCase):
                        "value TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, originAttributes TEXT)")
             db.execute("INSERT INTO moz_cookies VALUES ('.atcoder.jp', '/', 'REVEL_SESSION', 'fake-invalid', ?, 1, 1, '')",
                        (int(time.time()) + 3600,))
-        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        jar_path = self.jar_path
         jar_path.parent.mkdir(parents=True)
         jar = LWPCookieJar(str(jar_path))
         jar.set_cookie(Cookie(0, 'existing', 'preserved', None, False, 'example.org', False,
@@ -459,7 +493,7 @@ class CliIntegration(unittest.TestCase):
                        "value TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, originAttributes TEXT)")
             db.execute("INSERT INTO moz_cookies VALUES ('.atcoder.jp', '/', 'REVEL_SESSION', 'fake-concurrent', ?, 1, 1, '')",
                        (int(time.time()) + 3600,))
-        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        jar_path = self.jar_path
         jar_path.parent.mkdir(parents=True)
         jar = LWPCookieJar(str(jar_path))
         jar.set_cookie(Cookie(0, 'existing', 'preserved', None, False, 'example.org', False,
@@ -488,7 +522,7 @@ class CliIntegration(unittest.TestCase):
                        "value TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, originAttributes TEXT)")
             db.execute("INSERT INTO moz_cookies VALUES ('.atcoder.jp', '/', 'REVEL_SESSION', 'fake-concurrent', ?, 1, 1, '')",
                        (int(time.time()) + 3600,))
-        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        jar_path = self.jar_path
         env = self.env.copy()
         env["FAKE_CONCURRENT_JAR"] = str(jar_path)
         result = self.run_cli("login", "--firefox", profile, env=env)
@@ -532,7 +566,7 @@ class CliIntegration(unittest.TestCase):
                           "vivaldi"])
         self.assertTrue(all(record["cookie_file"] == str(database) and
                             record["domain_name"] == "atcoder.jp" for record in records))
-        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        jar_path = self.jar_path
         jar = LWPCookieJar(str(jar_path))
         jar.load(ignore_discard=True, ignore_expires=True)
         cookies = {(cookie.domain, cookie.name): cookie.value for cookie in jar}
@@ -548,7 +582,7 @@ class CliIntegration(unittest.TestCase):
         self.chromium_database(database)
         result = self.run_cli("login", "--browser", "edge", "--profile", database, env=env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        jar_path = self.jar_path
         before = jar_path.read_bytes()
         for mode in ("missing", "ambiguous", "rejected"):
             with self.subTest(mode=mode):
@@ -575,7 +609,7 @@ class CliIntegration(unittest.TestCase):
                 result = self.run_cli("login", "--browser", "edge", "--profile", database, env=env)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.events(), [])
-                self.assertFalse((self.data / "online-judge-tools" / "cookie.jar").exists())
+                self.assertFalse((self.jar_path).exists())
                 with sqlite3.connect(database) as db:
                     db.execute("DELETE FROM cookies WHERE host_key=? AND name=? AND top_frame_site_key=?",
                                (host, name, partition))
@@ -593,7 +627,7 @@ class CliIntegration(unittest.TestCase):
                 result = self.run_cli("login", "--browser", browser, "--profile", profile)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertNotIn("fake-firefox", result.stdout + result.stderr)
-                jar = LWPCookieJar(str(self.data / "online-judge-tools" / "cookie.jar"))
+                jar = LWPCookieJar(str(self.jar_path))
                 jar.load(ignore_discard=True, ignore_expires=True)
                 self.assertEqual(next(cookie.value for cookie in jar if cookie.name == "REVEL_SESSION"), "fake-firefox")
 
