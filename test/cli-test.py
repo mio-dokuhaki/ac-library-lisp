@@ -184,6 +184,12 @@ class CliIntegration(unittest.TestCase):
         jar.set_cookie(Cookie(0, 'other', 'preserved', None, False, 'example.org', False,
                               False, '/', True, True, int(time.time()) + 3600, False,
                               None, None, {}, False))
+        jar.set_cookie(Cookie(0, 'REVEL_SESSION', 'old-host-session', None, False,
+                              'atcoder.jp', False, False, '/', True, True,
+                              int(time.time()) + 3600, False, None, None, {}, False))
+        jar.set_cookie(Cookie(0, 'REVEL_SESSION', 'old-domain-session', None, False,
+                              '.atcoder.jp', True, True, '/old', True, True,
+                              int(time.time()) + 3600, False, None, None, {}, False))
         jar.save(ignore_discard=True, ignore_expires=True)
         jar_path.chmod(0o600)
         result = self.run_cli("login", "--firefox", profile)
@@ -198,6 +204,9 @@ class CliIntegration(unittest.TestCase):
         cookies = {(c.domain, c.name): c.value for c in jar}
         self.assertEqual(cookies.get(("example.org", "other")), "preserved")
         self.assertEqual(cookies.get((".atcoder.jp", "REVEL_SESSION")), token)
+        self.assertNotIn(("atcoder.jp", "REVEL_SESSION"), cookies)
+        self.assertEqual(sum(c.name == "REVEL_SESSION" and
+                             c.domain.lstrip(".") == "atcoder.jp" for c in jar), 1)
         self.assertEqual(cookies.get((".atcoder.jp", "same-origin")), "wanted")
         self.assertNotIn((".atcoder.jp", "different-container"), cookies)
         self.assertNotIn((".evil-atcoder.jp", "REVEL_SESSION"), cookies)
