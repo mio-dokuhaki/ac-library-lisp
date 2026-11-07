@@ -10,8 +10,6 @@ reviews:
   pre_merge_checks:
     docstrings:
       mode: "off"
-  path_filters:
-    - "**/*.out"
   path_instructions:
     - path: "**/*.lisp"
       instructions: |

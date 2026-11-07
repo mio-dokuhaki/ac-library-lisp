@@ -57,6 +57,9 @@ with SBCL and runs the downloaded samples. `submit [DIR]` repeats the tests and
 passes the expanded source to `oj`, which asks for confirmation. The default
 language selector is `SBCL`; use `--language ID` when necessary. The language is
 selected from the contest's current list rather than a fixed ID.
+Sample files must be regular files in `test/`, with matching `.in` and `.out`
+names. Hidden inputs, symlinks, and subdirectories are rejected; other files are
+not run. Tests use a temporary snapshot of the sample pairs.
 
 AtCoder uses Turnstile on its login page, so ordinary `oj login` may fail. Log in
 in your browser first, then import that profile's session and check it. Firefox,
@@ -221,6 +224,9 @@ ac-lisp submit
 `test [DIR]` は展開したコードを SBCL でコンパイルし、サンプルを実行します。
 `submit [DIR]` はテスト後に `oj` を呼び出し、確認を経て提出します。言語は
 コンテストの一覧から `SBCL` を選択し、必要なら `--language ID` で指定できます。
+サンプルは `test/` 直下の通常ファイルとし、同名の `.in` と `.out` を用意してください。
+隠し入力・シンボリックリンク・サブディレクトリはエラーになり、その他のファイルは
+実行しません。テストにはサンプルの一時コピーを使用します。
 
 AtCoder のログインには Turnstile があるため、通常の `oj login` が失敗する場合が
 あります。ブラウザで先にログインし、そのプロファイルのセッションを取り込めます。

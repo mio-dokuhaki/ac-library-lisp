@@ -104,12 +104,29 @@
                       "--non-interactive" "--eval" form))
     fasl))
 
-(defun regular-file-p (path)
-  (handler-case
-      (sb-posix:s-isreg (sb-posix:stat-mode (sb-posix:stat (namestring path))))
-    (sb-posix:syscall-error () nil)))
+(defun copy-sample (source destination)
+  (let ((fd (handler-case
+                (sb-posix:open source (logior sb-posix:o-rdonly sb-posix:o-nofollow
+                                              sb-posix:o-nonblock))
+              (sb-posix:syscall-error () (fail "cannot open regular sample file: ~A" source)))))
+    (unwind-protect
+         (progn
+           (unless (sb-posix:s-isreg (sb-posix:stat-mode (sb-posix:fstat fd)))
+             (fail "sample is not a regular file: ~A" source))
+           (let ((input (sb-sys:make-fd-stream fd :input t :element-type '(unsigned-byte 8))))
+             (setf fd nil)
+             (unwind-protect
+                  (with-open-file (output destination :direction :output :if-exists :error
+                                                     :if-does-not-exist :create
+                                                     :element-type '(unsigned-byte 8))
+                    (let ((buffer (make-array 8192 :element-type '(unsigned-byte 8))))
+                      (loop for count = (read-sequence buffer input)
+                            while (plusp count)
+                            do (write-sequence buffer output :end count))))
+               (close input))))
+      (when fd (sb-posix:close fd)))))
 
-(defun validate-samples (cases)
+(defun snapshot-samples (cases snapshot)
   (let ((stream (handler-case (sb-posix:opendir (namestring cases))
                   (sb-posix:syscall-error () (fail "sample directory not found: ~A" cases))))
         (count 0))
@@ -117,24 +134,33 @@
          (loop for entry = (sb-posix:readdir stream)
                until (sb-alien:null-alien entry)
                for name = (sb-posix:dirent-name entry)
-               for length = (length name)
-               when (and (> length 3) (string= ".in" name :start2 (- length 3)))
-                 do (when (char= (char name 0) #\.)
-                      (fail "hidden sample input is ignored by oj: ~A" name))
-                    (let* ((stem (subseq name 0 (- length 3)))
-                           (input (make-pathname :name stem :type "in" :defaults cases))
-                           (output (make-pathname :name stem :type "out" :defaults cases)))
-                      (unless (regular-file-p input) (fail "sample input is not a regular file: ~A" input))
-                      (unless (regular-file-p output) (fail "sample output is missing or not a regular file: ~A" output))
-                      (incf count)))
+               unless (member name '("." "..") :test #'string=)
+                 do (let* ((path (concatenate 'string (namestring cases) name))
+                           (stat (handler-case (sb-posix:lstat path)
+                                   (sb-posix:syscall-error () (fail "cannot inspect sample entry: ~A" path))))
+                           (mode (sb-posix:stat-mode stat))
+                           (length (length name)))
+                      (when (sb-posix:s-islnk mode) (fail "sample directory contains a symlink: ~A" path))
+                      (when (sb-posix:s-isdir mode) (fail "sample directory contains a subdirectory: ~A" path))
+                      (when (and (> length 3) (string= ".in" name :start2 (- length 3)))
+                        (when (char= (char name 0) #\.)
+                          (fail "hidden sample input is ignored by oj: ~A" name))
+                        (let* ((stem (subseq name 0 (- length 3)))
+                               (output-name (concatenate 'string stem ".out")))
+                          (copy-sample path (concatenate 'string (namestring snapshot) name))
+                          (copy-sample (concatenate 'string (namestring cases) output-name)
+                                       (concatenate 'string (namestring snapshot) output-name))
+                          (incf count)))))
       (sb-posix:closedir stream))
     (when (zerop count) (fail "no sample input files found in ~A" cases))))
 
 (defun test-solution (dir expanded temp)
-  (let ((cases (problem-file dir "test/")))
-    (validate-samples cases)
+  (let ((cases (problem-file dir "test/"))
+        (snapshot (merge-pathnames "test/" temp)))
+    (sb-posix:mkdir (namestring snapshot) #o700)
+    (snapshot-samples cases snapshot)
     (let ((fasl (compile-source expanded temp)))
-      (run "oj" (list "test" "--directory" (namestring cases) "--command"
+      (run "oj" (list "test" "--directory" (namestring snapshot) "--command"
                       (format nil "sbcl --script ~A" (shell-quote (namestring fasl))))))))
 
 (defun call-with-temp (function)

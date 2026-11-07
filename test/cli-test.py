@@ -37,6 +37,9 @@ if command == "submit":
 if command == "test":
     i = args.index("-c") if "-c" in args else args.index("--command")
     entry["command"] = args[i + 1]
+    i = args.index("--directory") if "--directory" in args else args.index("-d")
+    folder = pathlib.Path(args[i + 1])
+    entry["files"] = {p.name: p.read_text() for p in folder.iterdir() if p.is_file()}
 with open(os.environ["FAKE_OJ_LOG"], "a") as out:
     out.write(json.dumps(entry) + "\n")
 if command == "login" and os.environ.get("FAKE_CONCURRENT_JAR"):
@@ -60,6 +63,8 @@ if command == "download":
     (folder / "sample-1.in").write_text(os.environ["FAKE_INPUT"])
     (folder / "sample-1.out").write_text(os.environ["FAKE_OUTPUT"])
 elif command == "test":
+    if os.environ.get("FAKE_MUTATE_SOURCE"):
+        pathlib.Path(os.environ["FAKE_MUTATE_SOURCE"]).write_text(os.environ["FAKE_MUTATE_TEXT"])
     i = args.index("--directory") if "--directory" in args else args.index("-d")
     folder = pathlib.Path(args[i + 1])
     inputs = sorted(p for p in folder.glob("*.in") if not p.name.startswith("."))
@@ -209,11 +214,76 @@ class CliIntegration(unittest.TestCase):
         self.assertEqual([e["args"][0] for e in self.events()], ["download", "test", "test"])
         self.assertEqual(list(self.temp_root.iterdir()), [])
 
-    def assert_samples_rejected(self):
+    def test_sample_snapshot_excludes_unrecognized_files(self):
+        self.prepare()
+        cases = self.problem / "test"
+        (cases / "rogue.inBAD").write_text("would otherwise be unchecked\n")
+        (cases / "unchecked.in.bak").write_text("would otherwise be unchecked\n")
+        result = self.run_cli("test", self.problem)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        event = self.events()[-1]
+        self.assertEqual(event["args"][0], "test")
+        self.assertEqual(event["files"], {"sample-1.in": SAMPLE_INPUT, "sample-1.out": SAMPLE_OUTPUT})
+        index = event["args"].index("--directory")
+        snapshot = Path(event["args"][index + 1])
+        self.assertNotEqual(snapshot, cases)
+        self.assertFalse(snapshot.exists())
+        self.assertTrue((cases / "rogue.inBAD").exists())
+
+    def test_sample_snapshot_survives_original_changes(self):
+        self.prepare()
+        cases = self.problem / "test"
+        expected = cases / "sample-1.out"
+        env = self.env.copy()
+        env["FAKE_MUTATE_SOURCE"] = str(expected)
+        env["FAKE_MUTATE_TEXT"] = "changed while testing\n"
+        result = self.run_cli("test", self.problem, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(expected.read_text(), "changed while testing\n")
+        event = self.events()[-1]
+        self.assertEqual(event["files"]["sample-1.in"], SAMPLE_INPUT)
+        self.assertEqual(event["files"]["sample-1.out"], SAMPLE_OUTPUT)
+        self.assertEqual(list(self.temp_root.iterdir()), [])
+
+    def test_symlinked_sample_input_or_output_is_rejected(self):
+        self.prepare()
+        cases = self.problem / "test"
+        for suffix in ("in", "out"):
+            with self.subTest(suffix=suffix):
+                sample = cases / ("sample-1." + suffix)
+                content = sample.read_text()
+                target = self.base / ("target." + suffix)
+                target.write_text(content)
+                sample.unlink()
+                sample.symlink_to(target)
+                self.assert_samples_rejected()
+                sample.unlink()
+                sample.write_text(content)
+
+    def test_sample_subdirectory_and_other_symlinks_are_rejected(self):
+        self.prepare()
+        cases = self.problem / "test"
+        folder = cases / "nested"
+        folder.mkdir()
+        (folder / "sample.in").write_text("1 0\n")
+        (folder / "sample.out").write_text("0\n")
+        self.assert_samples_rejected("subdirectory")
+        (folder / "sample.in").unlink()
+        (folder / "sample.out").unlink()
+        folder.rmdir()
+        target = self.base / "note"
+        target.write_text("unrelated\n")
+        link = cases / "note.txt"
+        link.symlink_to(target)
+        self.assert_samples_rejected()
+
+    def assert_samples_rejected(self, message=None):
         for command in ("test", "submit"):
             with self.subTest(command=command):
                 result = self.run_cli(command, self.problem)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                if message:
+                    self.assertIn(message, result.stdout + result.stderr)
                 self.assertEqual([e["args"][0] for e in self.events()], ["download"])
                 self.assertEqual(list(self.temp_root.iterdir()), [])
 
