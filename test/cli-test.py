@@ -74,10 +74,12 @@ elif command == "test":
         output = sample.with_suffix(".out")
         if not output.is_file():
             sys.exit(1)
-        proc = subprocess.run(shlex.split(entry["command"]), input=sample.read_text(),
-                              text=True, capture_output=True)
-        if proc.returncode or proc.stdout.strip() != output.read_text().strip():
-            sys.stderr.write(f"Sample failed: {sample.name}\n" + proc.stderr + proc.stdout)
+        proc = subprocess.run(shlex.split(entry["command"]), input=sample.read_bytes(), capture_output=True)
+        actual = proc.stdout.decode("utf-8", errors="replace").encode("utf-8").replace(b"\r\n", b"\n")
+        expected = output.read_bytes().replace(b"\r\n", b"\n")
+        if proc.returncode or actual != expected:
+            sys.stderr.write(f"Sample failed: {sample.name}\n" +
+                             (proc.stderr + proc.stdout).decode("utf-8", errors="replace"))
             sys.exit(1)
 '''
 
@@ -213,6 +215,21 @@ class CliIntegration(unittest.TestCase):
         self.assertIn("sample-2.in", result.stderr)
         self.assertEqual([e["args"][0] for e in self.events()], ["download", "test", "test"])
         self.assertEqual(list(self.temp_root.iterdir()), [])
+
+    def test_whitespace_mismatch_fails_but_crlf_matches(self):
+        self.prepare()
+        (self.problem / "main.lisp").write_text('(format t "1~%")\n')
+        expected = self.problem / "test" / "sample-1.out"
+        expected.write_bytes(b"1\r\n")
+        result = self.run_cli("test", self.problem)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for data in (b" 1\n", b"1 \n", b"1", b"1\n\n", b"1\r"):
+            with self.subTest(expected=data):
+                expected.write_bytes(data)
+                result = self.run_cli("submit", self.problem)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("sample-1.in", result.stderr)
+                self.assertNotIn("submit", [e["args"][0] for e in self.events()])
 
     def test_sample_snapshot_excludes_unrecognized_files(self):
         self.prepare()
