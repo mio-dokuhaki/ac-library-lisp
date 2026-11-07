@@ -61,6 +61,12 @@ Sample files must be regular files in `test/`, with matching `.in` and `.out`
 names. Hidden inputs, symlinks, and subdirectories are rejected; other files are
 not run. Tests use a temporary snapshot of the sample pairs.
 
+For `submit`, the CLI applies a process-local compatibility fix when it detects
+the older `online-judge-api-client` parser that cannot read AtCoder's `KiB` and
+`MiB` memory limits. The installed `oj` package is not modified. This requires a
+normal Python `oj` installation that loads `sitecustomize` at startup; an updated
+client is left unchanged. Any existing `PYTHONPATH` and `sitecustomize` are kept.
+
 AtCoder uses Turnstile on its login page, so ordinary `oj login` may fail. Log in
 in your browser first, then import that profile's session and check it. Firefox,
 LibreWolf, Edge, Chrome, Chromium, Brave, Opera, Opera GX and Vivaldi are supported:
@@ -227,6 +233,12 @@ ac-lisp submit
 サンプルは `test/` 直下の通常ファイルとし、同名の `.in` と `.out` を用意してください。
 隠し入力・シンボリックリンク・サブディレクトリはエラーになり、その他のファイルは
 実行しません。テストにはサンプルの一時コピーを使用します。
+
+`submit` 時には、AtCoder のメモリ制限 `KiB` / `MiB` を読み取れない古い
+`online-judge-api-client` を検出した場合、そのプロセス内だけに互換修正を適用します。
+インストール済みの `oj` 自体は変更しません。起動時に `sitecustomize` を読み込む通常の
+Python 版 `oj` が必要です。修正済みの新しいクライアントには適用せず、既存の
+`PYTHONPATH` と `sitecustomize` も維持します。
 
 AtCoder のログインには Turnstile があるため、通常の `oj login` が失敗する場合が
 あります。ブラウザで先にログインし、そのプロファイルのセッションを取り込めます。
