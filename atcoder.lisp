@@ -19,13 +19,28 @@
   copy [DIR]               Copy expanded code to the clipboard~%
   submit [DIR] [--language ID]  Test and submit (default language: SBCL)~%"))
 
-(defun run (program arguments)
+(defun run (program arguments &optional environment)
   (let ((process (handler-case
-                     (sb-ext:run-program program arguments :search t :input t :output t :error t)
+                     (sb-ext:run-program program arguments :search t :input t :output t :error t
+                                         :environment (or environment (sb-ext:posix-environ)))
                    (error (e) (fail "cannot run ~A: ~A" program e)))))
     (unless (and (eq (sb-ext:process-status process) :exited)
                  (zerop (sb-ext:process-exit-code process)))
       (fail "~A failed (status ~A)" program (sb-ext:process-exit-code process)))))
+
+(defun oj-submit-environment ()
+  (let* ((compat (namestring (merge-pathnames "tools/oj-compat/" *root*)))
+         (old (uiop:getenv "PYTHONPATH"))
+         (value (if (and old (plusp (length old)))
+                    (concatenate 'string compat ":" old)
+                    compat)))
+    (append (list (concatenate 'string "PYTHONPATH=" value))
+            (unless (uiop:getenv "PYTHONDONTWRITEBYTECODE")
+              (list "PYTHONDONTWRITEBYTECODE=1"))
+            (remove-if (lambda (entry)
+                         (and (>= (length entry) 11)
+                              (string= "PYTHONPATH=" entry :end2 11)))
+                       (sb-ext:posix-environ)))))
 
 (defun valid-component-p (s)
   (and (plusp (length s))
@@ -249,7 +264,7 @@
                 (finish-output)
                 (handler-case
                     (run "oj" (list "submit" "--no-open" "--no-guess" "--language" language
-                                    url (namestring expanded)))
+                                    url (namestring expanded)) (oj-submit-environment))
                   (error (e)
                     (fail "~A~%If the request may have reached AtCoder, check your submissions before retrying." e)))))))))
       (t (fail "unknown command: ~A" command)))))

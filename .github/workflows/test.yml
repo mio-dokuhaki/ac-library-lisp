@@ -15,6 +15,11 @@ jobs:
         run: sbcl --script test/run.lisp
       - name: Run expander tests
         run: sbcl --script test/expander-test.lisp
+      - name: Install legacy oj for compatibility tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/oj-test"
+          "$RUNNER_TEMP/oj-test/bin/pip" install 'online-judge-tools==11.5.1' 'online-judge-api-client==10.10.1' setuptools
+          echo "AC_LISP_TEST_OJ_PYTHON=$RUNNER_TEMP/oj-test/bin/python" >> "$GITHUB_ENV"
       - name: Run AtCoder CLI integration tests
         run: python3 test/cli-test.py
       - name: Check examples through the expander

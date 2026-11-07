@@ -30,7 +30,9 @@ if args[:1] == ['--cookie']:
         sys.exit(2)
     args = args[2:]
 command = args[0]
-entry = {"args": args}
+entry = {"args": args, "pythonpath": os.environ.get("PYTHONPATH"),
+         "dontwritebytecode": os.environ.get("PYTHONDONTWRITEBYTECODE"),
+         "sitecustomize_value": getattr(sys.modules.get("sitecustomize"), "VALUE", None)}
 if command == "submit":
     source = pathlib.Path(args[-1])
     entry["source"] = source.read_text()
@@ -191,6 +193,107 @@ class CliIntegration(unittest.TestCase):
         self.assertEqual([entry["args"][0] for entry in events], ["download", "test", "submit"])
         self.assertIn(url, events[0]["args"])
         self.assertIn(url, events[-1]["args"])
+
+    def test_submit_preserves_pythonpath_and_user_sitecustomize(self):
+        self.prepare()
+        custom = self.base / "user pythonpath"
+        custom.mkdir()
+        marker = self.base / "sitecustomize-runs"
+        (custom / "sitecustomize.py").write_text(
+            'import os\nVALUE = "kept"\nwith open(os.environ["CUSTOMIZE_MARKER"], "a") as f: f.write("ran\\n")\n'
+        )
+        env = self.env.copy()
+        env["PYTHONPATH"] = str(custom)
+        env["CUSTOMIZE_MARKER"] = str(marker)
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        result = self.run_cli("submit", self.problem, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        test_event, submit_event = self.events()[-2:]
+        self.assertEqual(test_event["pythonpath"], str(custom))
+        paths = submit_event["pythonpath"].split(os.pathsep)
+        self.assertEqual([Path(p) for p in paths], [ROOT / "tools/oj-compat", custom])
+        self.assertEqual(submit_event["dontwritebytecode"], "1")
+        self.assertEqual(test_event["sitecustomize_value"], "kept")
+        self.assertEqual(submit_event["sitecustomize_value"], "kept")
+        self.assertEqual(marker.read_text().splitlines(), ["ran", "ran"])
+
+    def test_submit_preserves_bytecode_preference_and_failure(self):
+        self.prepare()
+        env = self.env.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "0"
+        env["PYTHONPYCACHEPREFIX"] = str(self.base / "bytecode-cache")
+        env["FAKE_OJ_FAIL"] = "submit"
+        result = self.run_cli("submit", self.problem, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.events()[-1]["dontwritebytecode"], "0")
+
+    def test_empty_pythonpath_does_not_add_working_directory(self):
+        self.prepare()
+        marker = self.base / "unexpected-sitecustomize"
+        (self.base / "sitecustomize.py").write_text(
+            'from pathlib import Path\nPath("unexpected-sitecustomize").write_text("ran")\n'
+        )
+        env = self.env.copy()
+        env["PYTHONPATH"] = ""
+        result = self.run_cli("submit", self.problem, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(Path(self.events()[-1]["pythonpath"]), ROOT / "tools/oj-compat")
+        self.assertNotIn(os.pathsep, self.events()[-1]["pythonpath"])
+        self.assertFalse(marker.exists())
+
+    def test_compatibility_leaves_fixed_parser_unchanged(self):
+        package = self.base / "mock-package"
+        service = package / "onlinejudge" / "service"
+        service.mkdir(parents=True)
+        (package / "onlinejudge" / "__init__.py").touch()
+        (service / "__init__.py").touch()
+        (service / "atcoder.py").write_text(
+            'class AtCoderProblemData:\n'
+            '    @classmethod\n'
+            '    def _from_html(cls, html, **kwargs): return ("fixed", html)\n'
+        )
+        env = self.env.copy()
+        env["PYTHONPATH"] = os.pathsep.join((str(ROOT / "tools/oj-compat"), str(package)))
+        code = ('from onlinejudge.service.atcoder import AtCoderProblemData; '
+                'assert AtCoderProblemData._from_html(b"1024 MiB") == ("fixed", b"1024 MiB")')
+        result = subprocess.run([sys.executable, "-c", code], cwd=self.base, env=env,
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(os.environ.get("AC_LISP_TEST_OJ_PYTHON"), "real oj test interpreter not configured")
+    def test_real_legacy_oj_parses_binary_memory_units(self):
+        python = os.environ["AC_LISP_TEST_OJ_PYTHON"]
+        script = r'''
+import re
+from onlinejudge.service import atcoder
+from onlinejudge.service.atcoder import AtCoderProblem, AtCoderProblemData
+problem = AtCoderProblem(contest_id="abc483", problem_id="abc483_a")
+for label, value, unit, expected in [
+    ("Memory Limit", "1024", "MiB", 1073741824),
+    ("メモリ制限", "1001", "KiB", 1025024),
+    ("Memory Limit", "249", "MiB", 261095424),
+    ("Memory Limit", "512", "MB", 512000000),
+]:
+    html = ('<html><head><meta charset="utf-8"><meta name="description" '
+            'content="Memory Limit: 1 MiB"></head><body><span class="h2">A - Sample</span>'
+            '<p>Time Limit: 2 sec / ' + label + ': ' + value + ' ' + unit + '</p></body></html>').encode()
+    data = AtCoderProblemData._from_html(html, problem=problem)
+    assert data.memory_limit_byte == expected, (unit, data.memory_limit_byte, expected)
+    assert data.html == html
+assert atcoder.re is re
+bad = b'<span class="h2">A - Sample</span><p>Time Limit: 2 sec / Memory Limit: 1 GB</p>'
+try:
+    AtCoderProblemData._from_html(bad, problem=problem)
+except AssertionError:
+    pass
+else:
+    raise AssertionError("unexpectedly accepted unsupported unit")
+'''
+        env = self.env.copy()
+        env["PYTHONPATH"] = str(ROOT / "tools/oj-compat")
+        result = subprocess.run([python, "-c", script], cwd=self.base, env=env,
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_failed_sample_aborts_submit(self):
         self.prepare()
