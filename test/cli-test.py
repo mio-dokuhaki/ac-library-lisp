@@ -20,7 +20,7 @@ SAMPLE_INPUT = (ROOT / "examples/practice2_a.in").read_text()
 SAMPLE_OUTPUT = (ROOT / "examples/practice2_a.out").read_text()
 
 FAKE_OJ = r'''#!/usr/bin/env python3
-import json, os, pathlib, shlex, subprocess, sys
+import http.cookiejar, json, os, pathlib, shlex, subprocess, sys, time
 
 args = sys.argv[1:]
 if args[:1] == ['--cookie']:
@@ -38,6 +38,18 @@ if command == "test":
     entry["command"] = args[i + 1]
 with open(os.environ["FAKE_OJ_LOG"], "a") as out:
     out.write(json.dumps(entry) + "\n")
+if command == "login" and os.environ.get("FAKE_CONCURRENT_JAR"):
+    jar_path = os.environ["FAKE_CONCURRENT_JAR"]
+    if os.environ.get("FAKE_CONCURRENT_ACTION") == "delete":
+        pathlib.Path(jar_path).unlink()
+    else:
+        jar = http.cookiejar.LWPCookieJar(jar_path)
+        if pathlib.Path(jar_path).exists():
+            jar.load(ignore_discard=True, ignore_expires=True)
+        jar.set_cookie(http.cookiejar.Cookie(0, 'concurrent', 'preserve-update', None, False,
+            'example.org', False, False, '/', True, True, int(time.time()) + 3600, False,
+            None, None, {}, False))
+        jar.save(ignore_discard=True, ignore_expires=True)
 if os.environ.get("FAKE_OJ_FAIL") == command:
     sys.exit(17)
 if command == "download":
@@ -438,6 +450,57 @@ class CliIntegration(unittest.TestCase):
         self.assertNotIn("fake-invalid", result.stdout + result.stderr)
         self.assertEqual(jar_path.read_bytes(), before)
         self.assertEqual(sorted(p.name for p in jar_path.parent.iterdir()), ["cookie.jar"])
+
+    def test_concurrent_cookie_jar_update_is_not_overwritten(self):
+        profile = self.base / "profile"
+        profile.mkdir()
+        with sqlite3.connect(profile / "cookies.sqlite") as db:
+            db.execute("CREATE TABLE moz_cookies (host TEXT, path TEXT, name TEXT, "
+                       "value TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, originAttributes TEXT)")
+            db.execute("INSERT INTO moz_cookies VALUES ('.atcoder.jp', '/', 'REVEL_SESSION', 'fake-concurrent', ?, 1, 1, '')",
+                       (int(time.time()) + 3600,))
+        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        jar_path.parent.mkdir(parents=True)
+        jar = LWPCookieJar(str(jar_path))
+        jar.set_cookie(Cookie(0, 'existing', 'preserved', None, False, 'example.org', False,
+                              False, '/', True, True, int(time.time()) + 3600, False,
+                              None, None, {}, False))
+        jar.save(ignore_discard=True, ignore_expires=True)
+        jar_path.chmod(0o600)
+        env = self.env.copy()
+        env["FAKE_CONCURRENT_JAR"] = str(jar_path)
+        result = self.run_cli("login", "--firefox", profile, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("fake-concurrent", result.stdout + result.stderr)
+        jar = LWPCookieJar(str(jar_path))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        cookies = {cookie.name: cookie.value for cookie in jar}
+        self.assertEqual(cookies["existing"], "preserved")
+        self.assertEqual(cookies["concurrent"], "preserve-update")
+        self.assertNotIn("REVEL_SESSION", cookies)
+        self.assertEqual(sorted(p.name for p in jar_path.parent.iterdir()), ["cookie.jar"])
+
+    def test_concurrent_cookie_jar_creation_or_deletion_is_not_overwritten(self):
+        profile = self.base / "profile"
+        profile.mkdir()
+        with sqlite3.connect(profile / "cookies.sqlite") as db:
+            db.execute("CREATE TABLE moz_cookies (host TEXT, path TEXT, name TEXT, "
+                       "value TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, originAttributes TEXT)")
+            db.execute("INSERT INTO moz_cookies VALUES ('.atcoder.jp', '/', 'REVEL_SESSION', 'fake-concurrent', ?, 1, 1, '')",
+                       (int(time.time()) + 3600,))
+        jar_path = self.data / "online-judge-tools" / "cookie.jar"
+        env = self.env.copy()
+        env["FAKE_CONCURRENT_JAR"] = str(jar_path)
+        result = self.run_cli("login", "--firefox", profile, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        jar = LWPCookieJar(str(jar_path))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        self.assertEqual({cookie.name: cookie.value for cookie in jar}, {"concurrent": "preserve-update"})
+        env["FAKE_CONCURRENT_ACTION"] = "delete"
+        result = self.run_cli("login", "--firefox", profile, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(jar_path.exists())
+        self.assertEqual(list(jar_path.parent.iterdir()), [])
 
     def browser_env(self):
         modules = self.base / "fake browser modules"

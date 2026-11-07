@@ -20,28 +20,40 @@ def oj_cookie_path():
     return base / 'online-judge-tools' / 'cookie.jar'
 
 
+def snapshot_jar(path):
+    if path.is_symlink():
+        raise ImportProblem('refusing to replace a symlinked cookie jar')
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
 def save_validated(cookies):
     jar_path = oj_cookie_path()
     jar_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if jar_path.is_symlink():
-        raise ImportProblem('refusing to replace a symlinked cookie jar')
-    jar = http.cookiejar.LWPCookieJar(str(jar_path))
-    if jar_path.exists():
-        jar.load(ignore_discard=True, ignore_expires=True)
-    for cookie in list(jar):
-        if cookie.domain.lstrip('.') == 'atcoder.jp':
-            jar.clear(cookie.domain, cookie.path, cookie.name)
-    for cookie in cookies:
-        jar.set_cookie(cookie)
+    original = snapshot_jar(jar_path)
     fd, temporary = tempfile.mkstemp(prefix='.cookie-', dir=jar_path.parent)
     try:
-        os.close(fd)
-        jar.save(temporary, ignore_discard=True, ignore_expires=True)
+        with os.fdopen(fd, 'wb') as stream:
+            if original is not None:
+                stream.write(original)
+        jar = http.cookiejar.LWPCookieJar(temporary)
+        if original is not None:
+            jar.load(ignore_discard=True, ignore_expires=True)
+        for cookie in list(jar):
+            if cookie.domain.lstrip('.') == 'atcoder.jp':
+                jar.clear(cookie.domain, cookie.path, cookie.name)
+        for cookie in cookies:
+            jar.set_cookie(cookie)
+        jar.save(ignore_discard=True, ignore_expires=True)
         os.chmod(temporary, 0o600)
         result = subprocess.run(['oj', '--cookie', temporary, 'login',
                                  'https://atcoder.jp/', '--check'], check=False)
         if result.returncode != 0:
             raise ImportProblem('AtCoder rejected the browser session; the existing cookie jar was not changed')
+        if snapshot_jar(jar_path) != original:
+            raise ImportProblem('cookie jar changed during authentication; import was not saved')
         os.chmod(temporary, 0o600)
         os.replace(temporary, jar_path)
     finally:

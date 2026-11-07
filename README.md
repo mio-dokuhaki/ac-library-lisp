@@ -79,6 +79,8 @@ uv pip install --python ~/.local/share/ac-lisp/venv/bin/python 'browser-cookie3=
 Alternatively, install `browser-cookie3` in your Python environment and set
 `AC_LISP_PYTHON` to that interpreter. The importer validates the session before
 replacing AtCoder cookies in the `oj` jar, preserving cookies for other sites.
+Avoid running other `oj` commands during an import: the importer detects changes
+before replacement, but cannot prevent a write between its final check and replacement.
 
 The session cookie is a credential; keep the `oj` cookie jar private. AtCoder may
 also require Turnstile for submissions to finished contests. As with
@@ -235,7 +237,9 @@ uv pip install --python ~/.local/share/ac-lisp/venv/bin/python 'browser-cookie3=
 
 別の Python 環境を使う場合は `browser-cookie3` を導入し、その実行ファイルを
 `AC_LISP_PYTHON` で指定してください。セッションを検証してから `oj` の AtCoder 用
-Cookie を更新し、他サイトの Cookie は保持します。
+Cookie を更新し、他サイトの Cookie は保持します。取り込み中は他の `oj` コマンドを
+実行しないでください。更新前の変更は検知しますが、最終確認から置換までの間の
+書き込みは防げません。
 
 セッション Cookie は認証情報なので、`oj` の Cookie ファイルは他人に公開しないで
 ください。終了済みコンテストでは提出時にも Turnstile が必要な場合があり、
