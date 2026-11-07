@@ -193,6 +193,17 @@ class CliIntegration(unittest.TestCase):
                 self.assert_samples_rejected()
                 input_file.unlink()
 
+    def test_paired_hidden_samples_cannot_be_silently_skipped(self):
+        self.prepare()
+        cases = self.problem / "test"
+        (cases / ".hidden.in").write_text(SAMPLE_INPUT)
+        (cases / ".hidden.out").write_text(SAMPLE_OUTPUT)
+        # A hidden pair is invalid both alongside visible samples and on its own.
+        self.assert_samples_rejected()
+        (cases / "sample-1.in").unlink()
+        (cases / "sample-1.out").unlink()
+        self.assert_samples_rejected()
+
     def test_submit_error_is_reported_and_temporary_files_removed(self):
         self.prepare()
         env = self.env.copy()
