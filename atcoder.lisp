@@ -103,9 +103,33 @@
                       "--non-interactive" "--eval" form))
     fasl))
 
+(defun regular-file-p (path)
+  (handler-case
+      (sb-posix:s-isreg (sb-posix:stat-mode (sb-posix:stat (namestring path))))
+    (sb-posix:syscall-error () nil)))
+
+(defun validate-samples (cases)
+  (let ((stream (handler-case (sb-posix:opendir (namestring cases))
+                  (sb-posix:syscall-error () (fail "sample directory not found: ~A" cases))))
+        (count 0))
+    (unwind-protect
+         (loop for entry = (sb-posix:readdir stream)
+               until (sb-alien:null-alien entry)
+               for name = (sb-posix:dirent-name entry)
+               for length = (length name)
+               when (and (> length 3) (string= ".in" name :start2 (- length 3)))
+                 do (let* ((stem (subseq name 0 (- length 3)))
+                           (input (make-pathname :name stem :type "in" :defaults cases))
+                           (output (make-pathname :name stem :type "out" :defaults cases)))
+                      (unless (regular-file-p input) (fail "sample input is not a regular file: ~A" input))
+                      (unless (regular-file-p output) (fail "sample output is missing or not a regular file: ~A" output))
+                      (incf count)))
+      (sb-posix:closedir stream))
+    (when (zerop count) (fail "no sample input files found in ~A" cases))))
+
 (defun test-solution (dir expanded temp)
   (let ((cases (problem-file dir "test/")))
-    (unless (probe-file cases) (fail "sample directory not found: ~A" cases))
+    (validate-samples cases)
     (let ((fasl (compile-source expanded temp)))
       (run "oj" (list "test" "--directory" (namestring cases) "--command"
                       (format nil "sbcl --script ~A" (shell-quote (namestring fasl))))))))

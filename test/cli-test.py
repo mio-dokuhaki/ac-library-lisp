@@ -148,6 +148,38 @@ class CliIntegration(unittest.TestCase):
         self.assertEqual([e["args"][0] for e in self.events()], ["download", "test"])
         self.assertEqual(list(self.temp_root.iterdir()), [])
 
+    def assert_samples_rejected(self):
+        for command in ("test", "submit"):
+            with self.subTest(command=command):
+                result = self.run_cli(command, self.problem)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual([e["args"][0] for e in self.events()], ["download"])
+                self.assertEqual(list(self.temp_root.iterdir()), [])
+
+    def test_missing_sample_output_cannot_test_or_submit(self):
+        self.prepare()
+        (self.problem / "test" / "sample-1.out").unlink()
+        self.assert_samples_rejected()
+
+    def test_no_sample_inputs_cannot_test_or_submit(self):
+        self.prepare()
+        (self.problem / "test" / "sample-1.in").unlink()
+        self.assert_samples_rejected()
+
+    def test_partially_paired_samples_cannot_test_or_submit(self):
+        self.prepare()
+        (self.problem / "test" / "sample-2.in").write_text("1 0\n")
+        self.assert_samples_rejected()
+
+    def test_hidden_and_hash_prefixed_unpaired_inputs_are_rejected(self):
+        self.prepare()
+        for name in (".hidden.in", "#extra.in"):
+            with self.subTest(name=name):
+                input_file = self.problem / "test" / name
+                input_file.write_text("1 0\n")
+                self.assert_samples_rejected()
+                input_file.unlink()
+
     def test_submit_error_is_reported_and_temporary_files_removed(self):
         self.prepare()
         env = self.env.copy()
