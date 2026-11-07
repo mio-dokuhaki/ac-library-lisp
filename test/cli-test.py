@@ -60,11 +60,20 @@ if command == "download":
     (folder / "sample-1.in").write_text(os.environ["FAKE_INPUT"])
     (folder / "sample-1.out").write_text(os.environ["FAKE_OUTPUT"])
 elif command == "test":
-    proc = subprocess.run(shlex.split(entry["command"]), input=os.environ["FAKE_INPUT"],
-                          text=True, capture_output=True)
-    if proc.returncode or proc.stdout.strip() != os.environ["FAKE_OUTPUT"].strip():
-        sys.stderr.write(proc.stderr + proc.stdout)
+    i = args.index("--directory") if "--directory" in args else args.index("-d")
+    folder = pathlib.Path(args[i + 1])
+    inputs = sorted(p for p in folder.glob("*.in") if not p.name.startswith("."))
+    if not inputs:
         sys.exit(1)
+    for sample in inputs:
+        output = sample.with_suffix(".out")
+        if not output.is_file():
+            sys.exit(1)
+        proc = subprocess.run(shlex.split(entry["command"]), input=sample.read_text(),
+                              text=True, capture_output=True)
+        if proc.returncode or proc.stdout.strip() != output.read_text().strip():
+            sys.stderr.write(f"Sample failed: {sample.name}\n" + proc.stderr + proc.stdout)
+            sys.exit(1)
 '''
 
 FAKE_BROWSER_COOKIE3 = r'''import http.cookiejar, json, os, time
@@ -119,6 +128,8 @@ class CliIntegration(unittest.TestCase):
         self.env = os.environ.copy()
         self.env.pop("AC_LISP_PYTHON", None)
         self.env.pop("PYTHONPATH", None)
+        self.env.pop("CL_SOURCE_REGISTRY", None)
+        self.env.pop("ASDF_OUTPUT_TRANSLATIONS", None)
         self.env.update(HOME=str(self.home),
                         PATH=str(self.bin) + os.pathsep + self.env.get("PATH", ""),
                         FAKE_OJ_LOG=str(self.log), FAKE_INPUT=SAMPLE_INPUT,
@@ -181,6 +192,21 @@ class CliIntegration(unittest.TestCase):
         run = self.run_cli("submit", self.problem, env=env)
         self.assertNotEqual(run.returncode, 0)
         self.assertEqual([e["args"][0] for e in self.events()], ["download", "test"])
+        self.assertEqual(list(self.temp_root.iterdir()), [])
+
+    def test_second_sample_failure_aborts_submit(self):
+        self.prepare()
+        cases = self.problem / "test"
+        (cases / "sample-2.in").write_text("2 2\n0 0 1\n1 0 1\n")
+        expected = cases / "sample-2.out"
+        expected.write_text("1\n")
+        result = self.run_cli("test", self.problem)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        expected.write_text("0\n")
+        result = self.run_cli("submit", self.problem)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sample-2.in", result.stderr)
+        self.assertEqual([e["args"][0] for e in self.events()], ["download", "test", "test"])
         self.assertEqual(list(self.temp_root.iterdir()), [])
 
     def assert_samples_rejected(self):

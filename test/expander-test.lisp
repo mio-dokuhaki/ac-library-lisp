@@ -10,6 +10,7 @@
                  (ensure-directories-exist dir)
                  (pathname dir)))
 (defvar *failures* 0)
+(defvar *child-environment* nil)
 
 (defun write-file (path text)
   (with-open-file (out path :direction :output :if-exists :supersede)
@@ -19,6 +20,7 @@
   (let ((output (make-string-output-stream)))
     (let ((process (sb-ext:run-program "sbcl" args
                                        :search t
+                                       :environment (or *child-environment* (sb-ext:posix-environ))
                                        :input (and input (make-string-input-stream input))
                                        :output output
                                        :error nil)))
@@ -41,23 +43,29 @@
   (unless ok (incf *failures*)))
 
 (defun compile-problems (file)
-  (let ((messages '()))
-    (handler-case
-        (handler-bind ((warning (lambda (w)
-                                  (let ((text (princ-to-string w)))
-                                    (when (search "undefined" (string-downcase text))
-                                      (push text messages)))
-                                  (muffle-warning w))))
-          (let ((*error-output* (make-broadcast-stream))
-                (*standard-output* (make-broadcast-stream)))
-            (multiple-value-bind (output warnings-p failure-p)
-                (compile-file file :output-file (merge-pathnames "tmp.fasl" *work*))
-              (declare (ignore warnings-p))
-              (when (or (null output) failure-p)
-                (push "compile-file reported failure" messages)))))
-      (error (e)
-        (push (format nil "compile-file signaled: ~A" e) messages)))
-    messages))
+  (let ((form (format nil
+                      "(let ((messages nil))
+                         (handler-case
+                             (handler-bind ((warning (lambda (w)
+                                                       (when (search \"undefined\" (string-downcase (princ-to-string w)))
+                                                         (push (princ-to-string w) messages))
+                                                       (muffle-warning w))))
+                               (let ((*error-output* (make-broadcast-stream))
+                                     (*standard-output* (make-broadcast-stream)))
+                                 (multiple-value-bind (output warnings failure)
+                                     (compile-file ~S :output-file ~S)
+                                   (declare (ignore warnings))
+                                   (when (or (null output) failure)
+                                     (push \"compile-file reported failure\" messages)))))
+                           (error (e) (push (princ-to-string e) messages)))
+                         (dolist (message messages) (format t \"~~A~~%\" message))
+                         (sb-ext:exit :code (if messages 1 0)))"
+                      (namestring file) (namestring (merge-pathnames "tmp.fasl" *work*)))))
+    (multiple-value-bind (output code)
+        (run (list "--noinform" "--no-userinit" "--no-sysinit" "--disable-debugger"
+                   "--non-interactive" "--eval" form))
+      (if (zerop code) nil
+          (list (if (plusp (length output)) output "compiler process failed"))))))
 
 (defun check-standalone-modules ()
   (dolist (module '("dsu" "fenwicktree" "segtree" "lazysegtree" "string" "math" "modint"
@@ -68,7 +76,15 @@
       (dolist (m messages) (format t "      ~A~%" m))))
   (let* ((file (expand "broken-source" (format nil "(acl-include :dsu)~%(defun broken () (let ((x)) (1+ x) (unknown-macro-form . 3)))~%")))
          (messages (compile-problems file)))
-    (report (not (null messages)) "compile failures are detected")))
+    (report (not (null messages)) "compile failures are detected"))
+  (let* ((symbol (intern "EXPANDER-ISOLATION-FIXTURE" :cl-user))
+         (file (merge-pathnames "isolated-undefined.lisp" *work*)))
+    (unwind-protect
+         (progn
+           (setf (symbol-function symbol) (lambda () 1))
+           (write-file file (format nil "(in-package :cl-user)~%(defun isolation-check () (expander-isolation-fixture))~%"))
+           (report (not (null (compile-problems file))) "standalone compilation ignores parent process definitions"))
+      (fmakunbound symbol))))
 
 (defun check-output (name source expected)
   (let ((file (expand name source)))
@@ -85,20 +101,41 @@
                    (subseq s 0 (read-sequence s in))))))
     (report (null (search "(defun pow-mod" text)) name)))
 
-(defun check-compiled-solution ()
+(defun check-compiled-solution (&optional (name "compiled solution loads in a fresh process"))
   (let* ((file (expand "compiled-solution"
                        (format nil "(acl-include :dsu)~%(princ (dsu-size (make-dsu 2) 1))~%")))
          (fasl (merge-pathnames "compiled-solution.fasl" *work*))
          (form (format nil "(multiple-value-bind (out warnings failure) (compile-file ~S :output-file ~S) (declare (ignore warnings)) (sb-ext:exit :code (if (and out (not failure)) 0 1)))"
                        (namestring file) (namestring fasl))))
     (multiple-value-bind (output code)
-        (run (list "--noinform" "--disable-debugger" "--eval" form))
+        (run (list "--noinform" "--no-userinit" "--no-sysinit" "--disable-debugger" "--eval" form))
       (declare (ignore output))
       (if (zerop code)
           (multiple-value-bind (result load-code)
-              (run (list "--noinform" "--disable-debugger" "--load" (namestring fasl) "--quit"))
-            (report (and (zerop load-code) (string= result "1")) "compiled solution loads in a fresh process"))
-          (report nil "compiled solution loads in a fresh process")))))
+              (run (list "--noinform" "--no-userinit" "--no-sysinit" "--disable-debugger" "--load" (namestring fasl) "--quit"))
+            (report (and (zerop load-code) (string= result "1")) name))
+          (report nil name)))))
+
+(defun check-user-init-isolation ()
+  (let* ((home (merge-pathnames "isolated-home/" *work*))
+         (xdg (merge-pathnames "config/" home))
+         (user-init (merge-pathnames ".sbclrc" home))
+         (xdg-init (merge-pathnames "sbcl/sbclrc" xdg))
+         (source (merge-pathnames "isolated-init.lisp" *work*)))
+    (ensure-directories-exist xdg-init)
+    (write-file user-init (format nil "(error \"user init must not run\")~%"))
+    (write-file xdg-init (format nil "(error \"user init must not run\")~%"))
+    (write-file source (format nil "(defun isolated-init-check () 1)~%"))
+    (let ((*child-environment*
+            (append (list (concatenate 'string "HOME=" (namestring home))
+                          (concatenate 'string "XDG_CONFIG_HOME=" (namestring xdg)))
+                    (remove-if (lambda (entry)
+                                 (or (and (>= (length entry) 5) (string= "HOME=" entry :end2 5))
+                                     (and (>= (length entry) 16)
+                                          (string= "XDG_CONFIG_HOME=" entry :end2 16))))
+                               (sb-ext:posix-environ)))))
+      (report (null (compile-problems source)) "standalone compilation ignores user init")
+      (check-compiled-solution "compiled solution ignores user init"))))
 
 (defun check-prefix-completion ()
   (dolist (case `(("string-after-quote" "'\"text\"")
@@ -128,6 +165,7 @@
 (defun main ()
   (check-standalone-modules)
   (check-compiled-solution)
+  (check-user-init-isolation)
   (check-prefix-completion)
   (check-output "convolution-ll-standalone"
                 (format nil "(acl-include :convolution)~%(let ((a (make-array 100 :initial-element 3)) (b (make-array 100 :initial-element 5))) (princ (aref (convolution-ll a b) 99)))~%")
