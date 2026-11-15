@@ -100,20 +100,29 @@ class Progress:
             self.active = False
 
 
+class TerminationRequested(BaseException):
+    pass
+
+
+def terminate_progress(signum, frame):
+    # Ignore repeated SIGTERM while the progress line is being finished.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise TerminationRequested()
+
+
 def run_problem(command, *, cwd, env, timeout=120, stderr=subprocess.STDOUT):
     """Run a helper, stopping its process group if work is interrupted."""
-    class TerminationRequested(BaseException):
-        pass
 
     process = None
     terminating = False
     interrupting = False
     cleaning = False
-    # Only replace the default action. An embedding caller's custom handler or
-    # explicit SIG_IGN must retain its existing behavior.
+    # Only replace the default action or our progress handler. An embedding
+    # caller's custom handler or explicit SIG_IGN keeps its existing behavior.
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
     handle_sigterm = (os.name == "posix"
                       and threading.current_thread() is threading.main_thread()
-                      and signal.getsignal(signal.SIGTERM) == signal.SIG_DFL)
+                      and previous_sigterm in (signal.SIG_DFL, terminate_progress))
     handle_sigint = (os.name == "posix"
                      and threading.current_thread() is threading.main_thread()
                      and signal.getsignal(signal.SIGINT) == signal.default_int_handler)
@@ -169,18 +178,21 @@ def run_problem(command, *, cwd, env, timeout=120, stderr=subprocess.STDOUT):
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
-        if terminating:
-            # Match the ordinary default SIGTERM exit status after cleanup.
-            signal.signal(signal.SIGTERM, signal.SIG_DFL)
-            os.kill(os.getpid(), signal.SIGTERM)
-        if interrupting:
-            raise KeyboardInterrupt
         raise
     finally:
         if handle_sigterm:
-            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.signal(signal.SIGTERM, previous_sigterm)
         if handle_sigint:
             signal.signal(signal.SIGINT, signal.default_int_handler)
+        # Recheck after restoring the handlers: a signal can arrive at any
+        # point during cleanup, including immediately before the re-raise.
+        if terminating:
+            if previous_sigterm is terminate_progress:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                raise TerminationRequested()
+            os.kill(os.getpid(), signal.SIGTERM)
+        if interrupting:
+            raise KeyboardInterrupt
     return subprocess.CompletedProcess(command, process.returncode, output, error_output)
 
 
@@ -258,33 +270,46 @@ def main(args):
     missing = []
     progress = Progress(len(tasks))
     last_start = None
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    handle_sigterm = (os.name == "posix"
+                      and threading.current_thread() is threading.main_thread()
+                      and previous_sigterm == signal.SIG_DFL)
     try:
-        for index, (label, url) in enumerate(tasks, 1):
-            if last_start is not None:
-                wait_for_next_start(last_start)
-            progress.start(index, label)
-            last_start = time.monotonic()
-            try:
-                result = run_problem([str(cli), "new", url, label], cwd=destination, env=env)
-            except (OSError, subprocess.TimeoutExpired) as error:
-                progress.finish()
-                return fail(f"problem {label} failed: {error}; created files remain in {destination}")
-            if result.returncode:
-                # The downloader also emits this when it cannot parse samples, so do
-                # not infer that the problem is interactive or silently succeed.
-                errors = [line.strip() for line in result.stdout.splitlines()
-                          if line.strip().startswith(("[ERROR]", "[FAILURE]"))]
-                if errors == ["[ERROR] Sample not found"]:
-                    progress.message(f"Warning: samples not found for {label}; files remain in {destination / label}")
-                    missing.append(label)
-                    progress.advance(index, label)
-                    continue
-                progress.finish()
-                print(result.stdout, file=sys.stderr, end="")
-                return fail(f"problem {label} failed; created files remain in {destination}")
-            progress.advance(index, label)
+        if handle_sigterm:
+            signal.signal(signal.SIGTERM, terminate_progress)
+        try:
+            for index, (label, url) in enumerate(tasks, 1):
+                if last_start is not None:
+                    wait_for_next_start(last_start)
+                progress.start(index, label)
+                last_start = time.monotonic()
+                try:
+                    result = run_problem([str(cli), "new", url, label], cwd=destination, env=env)
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    progress.finish()
+                    return fail(f"problem {label} failed: {error}; created files remain in {destination}")
+                if result.returncode:
+                    # The downloader also emits this when it cannot parse samples, so do
+                    # not infer that the problem is interactive or silently succeed.
+                    errors = [line.strip() for line in result.stdout.splitlines()
+                              if line.strip().startswith(("[ERROR]", "[FAILURE]"))]
+                    if errors == ["[ERROR] Sample not found"]:
+                        progress.message(f"Warning: samples not found for {label}; files remain in {destination / label}")
+                        missing.append(label)
+                        progress.advance(index, label)
+                        continue
+                    progress.finish()
+                    print(result.stdout, file=sys.stderr, end="")
+                    return fail(f"problem {label} failed; created files remain in {destination}")
+                progress.advance(index, label)
+        finally:
+            progress.finish()
+    except TerminationRequested:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
     finally:
-        progress.finish()
+        if handle_sigterm:
+            signal.signal(signal.SIGTERM, previous_sigterm)
     if missing:
         return fail(f"workspace created at {destination}, but samples were not found for: {', '.join(missing)}")
     print(f"Created contest workspace: {destination}")
