@@ -3,6 +3,7 @@
 
 import json
 import importlib.util
+import io
 from http.cookiejar import Cookie, LWPCookieJar
 import os
 from pathlib import Path
@@ -62,6 +63,8 @@ if command == "login" and os.environ.get("FAKE_CONCURRENT_JAR"):
 if os.environ.get("FAKE_OJ_FAIL") == command:
     sys.exit(17)
 if command == "download":
+    if os.environ.get("FAKE_OJ_DOWNLOAD_DELAY"):
+        time.sleep(float(os.environ["FAKE_OJ_DOWNLOAD_DELAY"]))
     if os.environ.get("FAKE_OJ_BLOCK_UNTIL_TERMINATED"):
         grandchild = r"""
 import os, pathlib, time
@@ -217,9 +220,9 @@ class CliIntegration(unittest.TestCase):
                         PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
         self.problem = self.base / "problem with spaces"
 
-    def run_cli(self, *args, env=None):
+    def run_cli(self, *args, env=None, text=True):
         return subprocess.run(["sbcl", "--script", str(CLI), *map(str, args)],
-                              cwd=self.base, env=env or self.env, text=True,
+                              cwd=self.base, env=env or self.env, text=text,
                               capture_output=True, timeout=60)
 
     def events(self):
@@ -230,10 +233,66 @@ class CliIntegration(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         (self.problem / "main.lisp").write_text(SOLUTION)
 
+    def test_contest_rate_limit_counts_time_spent_downloading(self):
+        spec = importlib.util.spec_from_file_location("new_contest_pacing_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module.time, "monotonic", return_value=100.7), \
+             patch.object(module.time, "sleep") as sleep:
+            module.wait_for_next_start(100.0)
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], 0.3)
+
+    def test_contest_rate_limit_does_not_wait_after_a_slow_download(self):
+        spec = importlib.util.spec_from_file_location("new_contest_no_wait_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module.time, "monotonic", return_value=102.0), \
+             patch.object(module.time, "sleep") as sleep:
+            module.wait_for_next_start(100.0)
+        sleep.assert_not_called()
+
+    def test_contest_loop_paces_problem_starts(self):
+        spec = importlib.util.spec_from_file_location("new_contest_loop_pacing_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        now = [0.0]
+        starts = []
+        sleeps = []
+        durations = iter((0.7, 1.2, 0.1))
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        def run_problem(command, **kwargs):
+            if command[0] == "oj-api":
+                return subprocess.CompletedProcess(command, 0, json.dumps(contest_response()), "")
+            starts.append((command[-1], now[0]))
+            now[0] += next(durations)
+            return subprocess.CompletedProcess(command, 0, "", None)
+
+        project = self.base / "paced contest"
+        with patch.object(module.time, "monotonic", side_effect=lambda: now[0]), \
+             patch.object(module.time, "sleep", side_effect=sleep), \
+             patch.object(module, "run_problem", side_effect=run_problem), \
+             patch("sys.stdout", new=io.StringIO()):
+            result = module.main(["typical90", str(project)])
+        self.assertEqual(result, 0)
+        self.assertEqual([label for label, _ in starts], ["001", "002", "003"])
+        for (_, actual), expected in zip(starts, (0.0, 1.0, 2.2)):
+            self.assertAlmostEqual(actual, expected)
+        self.assertEqual(len(sleeps), 1)
+        self.assertAlmostEqual(sleeps[0], 0.3)
+
     def test_new_contest_id_uses_official_labels_and_downloads_each_problem(self):
         project = self.base / "contest with spaces"
-        result = self.run_cli("new", "typical90", project)
+        result = self.run_cli("new", "typical90", project, text=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(b"[1/3]", result.stdout)
+        self.assertIn(b"[3/3]", result.stdout)
+        self.assertNotIn(b"\r", result.stdout)
+        self.assertNotIn(b"\x1b", result.stdout)
         for number, suffix in (("001", "a"), ("002", "b"), ("003", "c")):
             task = project / number
             self.assertTrue((task / "main.lisp").is_file())
@@ -242,6 +301,111 @@ class CliIntegration(unittest.TestCase):
             self.assertEqual((task / "test/sample-1.in").read_text(), SAMPLE_INPUT)
             self.assertEqual((task / "test/sample-1.out").read_text(), SAMPLE_OUTPUT)
         self.assertEqual([e["args"][0] for e in self.events()], ["download"] * 3)
+
+    def run_contest_on_terminal(self, project, env, columns=80):
+        import errno
+        import fcntl
+        import pty
+        import select
+        import struct
+        import termios
+
+        env = env.copy()
+        env.pop("COLUMNS", None)
+        env.pop("LINES", None)
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
+        process = None
+        output = bytearray()
+        try:
+            process = subprocess.Popen(["sbcl", "--script", str(CLI), "new", "typical90", str(project)],
+                                       cwd=self.base, env=env, stdout=slave, stderr=slave)
+            os.close(slave)
+            slave = None
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.1)
+                if ready:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                elif process.poll() is not None:
+                    break
+            else:
+                self.fail("contest setup did not finish on a pseudo-terminal")
+            returncode = process.wait(timeout=5)
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+            if slave is not None:
+                os.close(slave)
+            os.close(master)
+        return returncode, output.decode("utf-8", errors="replace")
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_tty_shows_completed_progress(self):
+        env = self.env.copy()
+        env["TERM"] = "xterm-256color"
+        returncode, display = self.run_contest_on_terminal(self.base / "terminal contest", env)
+        self.assertEqual(returncode, 0, display)
+        self.assertIn("\r[", display)
+        self.assertIn("3/3", display)
+        self.assertIn("100%", display)
+        self.assertIn("ETA", display)
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_tty_progress_fits_narrow_terminal(self):
+        env = self.env.copy()
+        env["TERM"] = "xterm-256color"
+        columns = 40
+        returncode, display = self.run_contest_on_terminal(self.base / "narrow terminal", env, columns)
+        self.assertEqual(returncode, 0, display)
+        updates = [part.split("\n", 1)[0] for part in display.split("\r") if part.startswith("[")]
+        self.assertTrue(updates, display)
+        self.assertTrue(all(len(line) < columns for line in updates), updates)
+        self.assertTrue(any("100%" in line for line in updates), updates)
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_dumb_terminal_uses_plain_progress(self):
+        env = self.env.copy()
+        env["TERM"] = "dumb"
+        returncode, display = self.run_contest_on_terminal(self.base / "dumb terminal", env)
+        self.assertEqual(returncode, 0, display)
+        self.assertIn("[1/3]", display)
+        self.assertIn("[3/3]", display)
+        self.assertNotIn("\x1b", display)
+        self.assertNotIn("\r", display.replace("\r\n", "\n"))
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_tty_keeps_warnings_visible_and_continues(self):
+        env = self.env.copy()
+        env["TERM"] = "xterm-256color"
+        env["FAKE_OJ_NO_SAMPLE_SUFFIX"] = "typical90_b"
+        project = self.base / "tty missing samples"
+        returncode, display = self.run_contest_on_terminal(project, env)
+        self.assertNotEqual(returncode, 0, display)
+        self.assertRegex(display, r"Warning: samples not found for 002[^\r\n]*\r\n")
+        self.assertIn("3/3", display)
+        self.assertIn("100%", display)
+        self.assertTrue((project / "003/test/sample-1.in").is_file())
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_tty_keeps_download_error_visible(self):
+        env = self.env.copy()
+        env["TERM"] = "xterm-256color"
+        env["FAKE_OJ_FAIL_URL_SUFFIX"] = "typical90_b"
+        project = self.base / "tty download failure"
+        returncode, display = self.run_contest_on_terminal(project, env)
+        self.assertNotEqual(returncode, 0, display)
+        self.assertIn("\r\n[ERROR] simulated download failure\r\n", display)
+        self.assertFalse((project / "003").exists())
 
     def test_new_contest_url_and_tasks_url(self):
         env = self.env.copy()
@@ -1315,6 +1479,144 @@ cookie_jar.save_validated([cookie])
                 jar = LWPCookieJar(str(self.jar_path))
                 jar.load(ignore_discard=True, ignore_expires=True)
                 self.assertEqual(next(cookie.value for cookie in jar if cookie.name == "REVEL_SESSION"), "fake-firefox")
+
+
+    @unittest.skipUnless(os.name == "posix", "POSIX signal handling required")
+    def test_contest_sigterm_during_popen_reaps_child(self):
+        spec = importlib.util.spec_from_file_location("new_contest_term_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original_handler = signal.getsignal(signal.SIGTERM)
+        launched = []
+        real_popen = subprocess.Popen
+
+        def terminate_before_popen_returns(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            launched.append(process)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return process
+
+        try:
+            signal.signal(signal.SIGTERM, module.terminate_progress)
+            with patch.object(module.subprocess, "Popen", side_effect=terminate_before_popen_returns):
+                with self.assertRaises(module.TerminationRequested):
+                    module.run_problem([sys.executable, "-c", "import time; time.sleep(30)"],
+                                       cwd=self.base, env=self.env)
+            self.assertIsNotNone(launched[0].poll(), "child was not reaped")
+        finally:
+            signal.signal(signal.SIGTERM, original_handler)
+            for process in launched:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=10)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX signal handling required")
+    def test_contest_sigterm_at_cleanup_reraise_is_not_lost(self):
+        import inspect
+
+        spec = importlib.util.spec_from_file_location("new_contest_cleanup_term_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        lines, first_line = inspect.getsourcelines(module.run_problem)
+        reraise_line = next(first_line + offset for offset, line in enumerate(lines)
+                            if line == "        raise\n")
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        previous_trace = sys.gettrace()
+        sent = False
+
+        def send_during_cleanup(frame, event, arg):
+            nonlocal sent
+            if (not sent and event == "line" and frame.f_code is module.run_problem.__code__
+                    and frame.f_lineno == reraise_line):
+                sent = True
+                os.kill(os.getpid(), signal.SIGTERM)
+            return send_during_cleanup
+
+        try:
+            signal.signal(signal.SIGTERM, module.terminate_progress)
+            sys.settrace(send_during_cleanup)
+            with self.assertRaises(module.TerminationRequested):
+                module.run_problem([sys.executable, "-c", "import time; time.sleep(30)"],
+                                   cwd=self.base, env=self.env, timeout=0.05)
+            self.assertTrue(sent, "SIGTERM was not injected during cleanup")
+            self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
+        finally:
+            sys.settrace(previous_trace)
+            signal.signal(signal.SIGTERM, previous_handler)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX signal handling required")
+    def test_contest_preserves_existing_sigterm_handler(self):
+        spec = importlib.util.spec_from_file_location("new_contest_handler_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original_handler = signal.getsignal(signal.SIGTERM)
+
+        def custom_handler(signum, frame):
+            pass
+
+        try:
+            for handler in (signal.SIG_IGN, custom_handler):
+                with self.subTest(handler=handler):
+                    signal.signal(signal.SIGTERM, handler)
+                    result = module.run_problem([sys.executable, "-c", "pass"],
+                                                cwd=self.base, env=self.env)
+                    self.assertEqual(result.returncode, 0)
+                    self.assertIs(signal.getsignal(signal.SIGTERM), handler)
+        finally:
+            signal.signal(signal.SIGTERM, original_handler)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX signals and pseudo-terminal required")
+    def test_contest_sigterm_finishes_progress_during_download_and_wait(self):
+        import errno
+        import pty
+        import select
+
+        for phase in ("download", "wait"):
+            with self.subTest(phase=phase):
+                env = self.env.copy()
+                env["TERM"] = "xterm"
+                if phase == "download":
+                    env["FAKE_OJ_DOWNLOAD_DELAY"] = "3"
+                master, slave = pty.openpty()
+                process = None
+                output = bytearray()
+                try:
+                    process = subprocess.Popen(
+                        [sys.executable, str(ROOT / "tools/new-contest.py"),
+                         "typical90", str(self.base / ("sigterm-tty-" + phase))],
+                        cwd=self.base, env=env, stdout=slave, stderr=slave)
+                    os.close(slave)
+                    slave = None
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline:
+                        if select.select([master], [], [], 0.05)[0]:
+                            output.extend(os.read(master, 65536))
+                        ready = (b"0/3" in output and self.log.exists()) if phase == "download" else b"1/3" in output
+                        if ready:
+                            break
+                        self.assertIsNone(process.poll(), output.decode(errors="replace"))
+                    else:
+                        self.fail(f"{phase} did not start: {output!r}")
+                    process.send_signal(signal.SIGTERM)
+                    self.assertEqual(process.wait(timeout=10), -signal.SIGTERM)
+                    while select.select([master], [], [], 0)[0]:
+                        try:
+                            chunk = os.read(master, 65536)
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                            break
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+                    self.assertTrue(output.endswith(b"\r\n"), repr(output))
+                finally:
+                    if process is not None and process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=10)
+                    if slave is not None:
+                        os.close(slave)
+                    os.close(master)
 
 
 if __name__ == "__main__":
