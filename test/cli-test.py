@@ -2,15 +2,18 @@
 """Exercise the AtCoder CLI end to end with a local, deterministic oj double."""
 
 import json
+import importlib.util
 from http.cookiejar import Cookie, LWPCookieJar
 import os
 from pathlib import Path
 import sqlite3
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -347,6 +350,51 @@ class CliIntegration(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(project.exists())
         self.assertEqual(self.events(), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_timeout_terminates_download_descendants(self):
+        spec = importlib.util.spec_from_file_location("new_contest_timeout_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        started = self.base / "descendant-started"
+        survived = self.base / "descendant-survived"
+        grandchild = (
+            "from pathlib import Path; import time; "
+            f"Path({str(started)!r}).write_text('started'); "
+            f"time.sleep(1.5); Path({str(survived)!r}).write_text('alive')"
+        )
+        child = (
+            "import subprocess,sys,time; "
+            f"subprocess.Popen([sys.executable,'-c',{grandchild!r}]); "
+            "time.sleep(20)"
+        )
+        real_popen = subprocess.Popen
+
+        def start_and_wait_for_descendant(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            deadline = time.monotonic() + 15
+            try:
+                while not started.exists():
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        raise AssertionError("descendant did not start")
+                    time.sleep(0.01)
+            except BaseException:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise
+            return process
+
+        # Begin the timeout only after the real descendant has signalled that
+        # it is running; a slow interpreter start must not make the test flaky.
+        with patch.object(module.subprocess, "Popen", side_effect=start_and_wait_for_descendant):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                module.run_problem([sys.executable, "-c", child], cwd=self.base,
+                                   env=self.env, timeout=0.25)
+        time.sleep(1.75)
+        self.assertFalse(survived.exists(), "download descendant survived the timeout")
 
     def test_new_contest_missing_samples_continues_but_reports_incomplete(self):
         env = self.env.copy()

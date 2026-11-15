@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -17,6 +18,38 @@ LABEL = re.compile(rf"{COMPONENT}\Z")
 def fail(message):
     print(f"ac-lisp: {message}", file=sys.stderr)
     return 1
+
+
+def run_problem(command, *, cwd, env, timeout=120):
+    """Run one setup, stopping its process group if setup is interrupted."""
+    process = subprocess.Popen(
+        command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+        start_new_session=(os.name == "posix"),
+    )
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except BaseException:
+        if os.name == "posix":
+            # The direct process can already have exited while its oj child
+            # still holds the output pipe; kill the whole group in either case.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+        else:
+            # No portable process-group termination exists outside POSIX.
+            # Reap the child and close our pipe even if a descendant holds it.
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            process.wait()
+            if process.stdout is not None:
+                process.stdout.close()
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, output)
 
 
 def main(args):
@@ -89,11 +122,7 @@ def main(args):
             time.sleep(1)
         print(f"[{index}/{len(tasks)}] {label}", flush=True)
         try:
-            result = subprocess.run(
-                [str(cli), "new", url, label], cwd=destination, env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                encoding="utf-8", errors="replace", timeout=120,
-            )
+            result = run_problem([str(cli), "new", url, label], cwd=destination, env=env)
         except (OSError, subprocess.TimeoutExpired) as error:
             return fail(f"problem {label} failed: {error}; created files remain in {destination}")
         if result.returncode:
