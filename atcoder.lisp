@@ -11,7 +11,7 @@
 
 (defun usage ()
   (format t "Usage: ac-lisp COMMAND [ARGS]~%~%
-  new URL [DIR]            Create a problem directory and download samples~%
+  new URL|CONTEST [DIR]    Create a problem or contest workspace~%
   login [--check]          Log in or check status without opening a browser~%
   login --firefox PROFILE Import an existing Firefox login and check it~%
   login --browser NAME --profile PATH  Import a browser login and check it~%
@@ -28,7 +28,38 @@
                  (zerop (sb-ext:process-exit-code process)))
       (fail "~A failed (status ~A)" program (sb-ext:process-exit-code process)))))
 
-(defun oj-submit-environment ()
+(defun run-terminable (program arguments)
+  "Run a helper, forwarding termination signals and waiting for cleanup."
+  (let ((process nil)
+        (terminated nil))
+    (labels ((terminate-child ()
+               (when (and process (sb-ext:process-alive-p process))
+                 (sb-ext:process-kill process terminated)))
+             (handle-termination (signal info context)
+               (declare (ignore info context))
+               (unless terminated
+                 (setf terminated signal)
+                 (terminate-child))))
+      (unwind-protect
+           (progn
+             (sb-sys:enable-interrupt sb-unix:sigterm #'handle-termination)
+             (sb-sys:enable-interrupt sb-unix:sigint #'handle-termination)
+             (setf process
+                   (handler-case
+                       (sb-ext:run-program program arguments :search t :wait nil
+                                           :input t :output t :error t)
+                     (error (e) (fail "cannot run ~A: ~A" program e))))
+             ;; A signal can arrive while RUN-PROGRAM is creating the child.
+             (when terminated (terminate-child))
+             (sb-ext:process-wait process)
+             (when terminated (sb-ext:exit :code (+ 128 terminated)))
+             (unless (and (eq (sb-ext:process-status process) :exited)
+                          (zerop (sb-ext:process-exit-code process)))
+               (fail "~A failed (status ~A)" program (sb-ext:process-exit-code process))))
+        (sb-sys:enable-interrupt sb-unix:sigterm :default)
+        (sb-sys:enable-interrupt sb-unix:sigint :default)))))
+
+(defun oj-compat-environment ()
   (let* ((compat (namestring (merge-pathnames "tools/oj-compat/" *root*)))
          (old (uiop:getenv "PYTHONPATH"))
          (value (if (and old (plusp (length old)))
@@ -84,7 +115,8 @@
       (format t "Created ~A~%" dir)
       (finish-output)
       (handler-case
-          (run "oj" (list "download" url "--directory" (namestring (merge-pathnames "test/" dir))))
+          (run "oj" (list "download" url "--directory" (namestring (merge-pathnames "test/" dir)))
+               (oj-compat-environment))
         (error (e)
           (fail "~A~%Files remain in ~A. Retry with: oj download ~A -d ~A" e dir url
                 (merge-pathnames "test/" dir)))))))
@@ -234,8 +266,16 @@
     (cond
       ((or (null command) (member command '("-h" "--help" "help") :test #'string=)) (usage))
       ((string= command "new")
-       (unless (<= 1 (length args) 2) (fail "new requires URL [DIR]"))
-       (new-problem (first args) (second args)))
+       (unless (<= 1 (length args) 2) (fail "new requires URL or contest ID [DIR]"))
+       (let* ((target (first args))
+              (path-end (min (or (position #\? target) (length target))
+                             (or (position #\# target) (length target))))
+              (target-path (subseq target 0 path-end)))
+         (if (or (valid-component-p target)
+                 (and (uiop:string-prefix-p "https://atcoder.jp/contests/" target-path)
+                      (not (search "/tasks/" (string-right-trim "/" target-path)))))
+             (run-terminable "python3" (append (list (namestring (merge-pathnames "tools/new-contest.py" *root*))) args))
+             (new-problem target (second args)))))
       ((string= command "login")
        (cond ((or (null args) (equal args '("--check")))
               (run "oj" (append (list "login" "https://atcoder.jp/" "--use-browser" "never") args)))
@@ -264,7 +304,7 @@
                 (finish-output)
                 (handler-case
                     (run "oj" (list "submit" "--no-open" "--no-guess" "--language" language
-                                    url (namestring expanded)) (oj-submit-environment))
+                                    url (namestring expanded)) (oj-compat-environment))
                   (error (e)
                     (fail "~A~%If the request may have reached AtCoder, check your submissions before retrying." e)))))))))
       (t (fail "unknown command: ~A" command)))))

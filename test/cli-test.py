@@ -2,15 +2,18 @@
 """Exercise the AtCoder CLI end to end with a local, deterministic oj double."""
 
 import json
+import importlib.util
 from http.cookiejar import Cookie, LWPCookieJar
 import os
 from pathlib import Path
 import sqlite3
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -59,6 +62,27 @@ if command == "login" and os.environ.get("FAKE_CONCURRENT_JAR"):
 if os.environ.get("FAKE_OJ_FAIL") == command:
     sys.exit(17)
 if command == "download":
+    if os.environ.get("FAKE_OJ_BLOCK_UNTIL_TERMINATED"):
+        grandchild = r"""
+import os, pathlib, time
+pathlib.Path(os.environ["FAKE_SIGTERM_STARTED"]).write_text(
+    f"{os.getpid()} {os.getpgrp()}")
+release = pathlib.Path(os.environ["FAKE_SIGTERM_RELEASE"])
+while not release.exists():
+    time.sleep(0.02)
+pathlib.Path(os.environ["FAKE_SIGTERM_SURVIVED"]).write_text("alive")
+time.sleep(30)
+"""
+        subprocess.Popen([sys.executable, '-c', grandchild],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(30)
+        sys.exit(1)
+    if args[1].endswith(os.environ.get("FAKE_OJ_NO_SAMPLE_SUFFIX", "\0")):
+        sys.stderr.write("[ERROR] Sample not found\n")
+        sys.exit(1)
+    if args[1].endswith(os.environ.get("FAKE_OJ_FAIL_URL_SUFFIX", "\0")):
+        sys.stderr.write("[ERROR] simulated download failure\n")
+        sys.exit(17)
     i = args.index("--directory") if "--directory" in args else args.index("-d")
     folder = pathlib.Path(args[i + 1])
     folder.mkdir(parents=True, exist_ok=True)
@@ -84,6 +108,45 @@ elif command == "test":
                              (proc.stderr + proc.stdout).decode("utf-8", errors="replace"))
             sys.exit(1)
 '''
+
+FAKE_OJ_API = r'''#!/usr/bin/env python3
+import json, os, subprocess, sys, time
+with open(os.environ['FAKE_OJ_API_LOG'], 'a') as out:
+    out.write(json.dumps({'args': sys.argv[1:],
+                          'pythonpath': os.environ.get('PYTHONPATH'),
+                          'dontwritebytecode': os.environ.get('PYTHONDONTWRITEBYTECODE'),
+                          'sitecustomize_value': getattr(sys.modules.get('sitecustomize'), 'VALUE', None)}) + '\n')
+if os.environ.get('FAKE_OJ_API_FAIL'):
+    sys.stderr.write('simulated contest lookup failure\n')
+    sys.exit(17)
+if os.environ.get('FAKE_OJ_API_BLOCK_UNTIL_TERMINATED'):
+    grandchild = r"""
+import os, pathlib, time
+pathlib.Path(os.environ["FAKE_SIGTERM_STARTED"]).write_text(
+    f"{os.getpid()} {os.getpgrp()}")
+release = pathlib.Path(os.environ["FAKE_SIGTERM_RELEASE"])
+while not release.exists():
+    time.sleep(0.02)
+pathlib.Path(os.environ["FAKE_SIGTERM_SURVIVED"]).write_text("alive")
+time.sleep(30)
+"""
+    subprocess.Popen([sys.executable, '-c', grandchild],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(30)
+    sys.exit(1)
+print(os.environ['FAKE_OJ_API_RESPONSE'])
+'''
+
+
+def contest_response(contest="typical90", labels=("001", "002", "003")):
+    problems = []
+    for index, label in enumerate(labels):
+        task = f"{contest}_{chr(ord('a') + index)}"
+        problems.append({"url": f"https://atcoder.jp/contests/{contest}/tasks/{task}",
+                         "name": f"Problem {label}", "context": {"alphabet": label}})
+    return {"status": "ok", "result": {
+        "url": f"https://atcoder.jp/contests/{contest}", "problems": problems}}
+
 
 FAKE_BROWSER_COOKIE3 = r'''import http.cookiejar, json, os, time
 from pathlib import Path
@@ -121,6 +184,9 @@ class CliIntegration(unittest.TestCase):
         fake = self.bin / "oj"
         fake.write_text(FAKE_OJ)
         fake.chmod(0o755)
+        fake_api = self.bin / "oj-api"
+        fake_api.write_text(FAKE_OJ_API)
+        fake_api.chmod(0o755)
         self.log = self.base / "oj.jsonl"
         copy = self.bin / "wl-copy"
         copy.write_text('#!/usr/bin/env python3\nimport os, pathlib, sys\n'
@@ -146,6 +212,8 @@ class CliIntegration(unittest.TestCase):
                         XDG_DATA_HOME=str(self.data), XDG_CONFIG_HOME=str(self.base / "config"),
                         XDG_CACHE_HOME=str(self.base / "cache"), XDG_STATE_HOME=str(self.base / "state"),
                         FAKE_CLIPBOARD=str(self.clipboard), WAYLAND_DISPLAY="test-display",
+                        FAKE_OJ_API_LOG=str(self.base / "oj-api.jsonl"),
+                        FAKE_OJ_API_RESPONSE=json.dumps(contest_response()),
                         PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
         self.problem = self.base / "problem with spaces"
 
@@ -161,6 +229,377 @@ class CliIntegration(unittest.TestCase):
         result = self.run_cli("new", TASK_URL, self.problem)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         (self.problem / "main.lisp").write_text(SOLUTION)
+
+    def test_new_contest_id_uses_official_labels_and_downloads_each_problem(self):
+        project = self.base / "contest with spaces"
+        result = self.run_cli("new", "typical90", project)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for number, suffix in (("001", "a"), ("002", "b"), ("003", "c")):
+            task = project / number
+            self.assertTrue((task / "main.lisp").is_file())
+            self.assertEqual((task / "problem-url.txt").read_text().strip(),
+                             f"https://atcoder.jp/contests/typical90/tasks/typical90_{suffix}")
+            self.assertEqual((task / "test/sample-1.in").read_text(), SAMPLE_INPUT)
+            self.assertEqual((task / "test/sample-1.out").read_text(), SAMPLE_OUTPUT)
+        self.assertEqual([e["args"][0] for e in self.events()], ["download"] * 3)
+
+    def test_new_contest_url_and_tasks_url(self):
+        env = self.env.copy()
+        env["FAKE_OJ_API_RESPONSE"] = json.dumps(contest_response("abc484", ("A", "B")))
+        for index, suffix in enumerate(("", "/tasks", "/tasks?lang=ja#top", "/?lang=ja")):
+            with self.subTest(suffix=suffix):
+                project = self.base / f"contest-{index}"
+                result = self.run_cli("new", "https://atcoder.jp/contests/abc484" + suffix,
+                                      project, env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue((project / "A/main.lisp").is_file())
+                self.assertTrue((project / "B/main.lisp").is_file())
+                api_records = [json.loads(line) for line in
+                               (self.base / "oj-api.jsonl").read_text().splitlines()]
+                self.assertEqual(api_records[-1]["args"],
+                                 ["get-contest", "https://atcoder.jp/contests/abc484"])
+
+    def test_new_contest_lookup_preserves_pythonpath_and_existing_sitecustomize(self):
+        custom = self.base / "user contest pythonpath"
+        custom.mkdir()
+        (custom / "sitecustomize.py").write_text('VALUE = "kept"\n')
+        env = self.env.copy()
+        env["PYTHONPATH"] = str(custom)
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        result = self.run_cli("new", "typical90", self.base / "with custom pythonpath", env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        api_log = self.base / "oj-api.jsonl"
+        records = [json.loads(line) for line in api_log.read_text().splitlines()]
+        self.assertEqual(len(records), 1)
+        paths = records[0]["pythonpath"].split(os.pathsep)
+        self.assertEqual([Path(p) for p in paths], [ROOT / "tools/oj-compat", custom])
+        self.assertEqual(records[0]["dontwritebytecode"], "1")
+        self.assertEqual(records[0]["sitecustomize_value"], "kept")
+        self.assertEqual(len(self.events()), 3)
+        for event in self.events():
+            self.assertEqual([Path(p) for p in event["pythonpath"].split(os.pathsep)],
+                             [ROOT / "tools/oj-compat", custom])
+            self.assertEqual(event["sitecustomize_value"], "kept")
+
+    def test_new_problem_download_preserves_pythonpath_and_existing_sitecustomize(self):
+        custom = self.base / "user download pythonpath"
+        custom.mkdir()
+        (custom / "sitecustomize.py").write_text('VALUE = "kept"\n')
+        env = self.env.copy()
+        env["PYTHONPATH"] = str(custom)
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        result = self.run_cli("new", TASK_URL, self.problem, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        event = self.events()[0]
+        self.assertEqual(event["args"][0], "download")
+        self.assertEqual([Path(p) for p in event["pythonpath"].split(os.pathsep)],
+                         [ROOT / "tools/oj-compat", custom])
+        self.assertEqual(event["dontwritebytecode"], "1")
+        self.assertEqual(event["sitecustomize_value"], "kept")
+
+    def test_new_contest_default_directory_is_contest_id(self):
+        result = self.run_cli("new", "typical90")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.base / "typical90/001/main.lisp").is_file())
+        self.assertTrue((self.base / "typical90/003/problem-url.txt").is_file())
+
+    def test_new_contest_invalid_identifier_does_not_create_project(self):
+        for identifier in (
+            "../escape", "https://example.com/contests/abc484",
+            "https://atcoder.jp.evil.example/contests/abc484?lang=ja",
+            "https://user@atcoder.jp/contests/abc484?lang=ja",
+            "https://atcoder.jp@evil.example/contests/abc484#top",
+        ):
+            with self.subTest(identifier=identifier):
+                project = self.base / "invalid-input"
+                result = self.run_cli("new", identifier, project)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(project.exists())
+                self.assertEqual(self.events(), [])
+
+    def test_new_contest_rejects_existing_project_without_modifying_it(self):
+        project = self.base / "existing"
+        project.mkdir()
+        (project / "keep.txt").write_text("user data")
+        result = self.run_cli("new", "typical90", project)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((project / "keep.txt").read_text(), "user data")
+        self.assertEqual([p.name for p in project.iterdir()], ["keep.txt"])
+        self.assertEqual(self.events(), [])
+
+    def test_new_contest_rejects_dangling_symlink_destination(self):
+        project = self.base / "dangling"
+        project.symlink_to(self.base / "not-created", target_is_directory=True)
+        result = self.run_cli("new", "typical90", project)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(project.is_symlink())
+        self.assertFalse((self.base / "not-created").exists())
+        self.assertEqual(self.events(), [])
+
+    def test_new_contest_rejects_untrusted_or_duplicate_list_entries_before_creation(self):
+        variants = []
+        bad_label = contest_response()
+        bad_label["result"]["problems"][0]["context"]["alphabet"] = "../escape"
+        variants.append(bad_label)
+        bad_url = contest_response()
+        bad_url["result"]["problems"][0]["url"] = "https://example.com/evil"
+        variants.append(bad_url)
+        other_contest = contest_response()
+        other_contest["result"]["problems"][0]["url"] = "https://atcoder.jp/contests/other/tasks/other_a"
+        variants.append(other_contest)
+        duplicate_label = contest_response()
+        duplicate_label["result"]["problems"][1]["context"]["alphabet"] = "001"
+        variants.append(duplicate_label)
+        duplicate_url = contest_response()
+        duplicate_url["result"]["problems"][1]["url"] = duplicate_url["result"]["problems"][0]["url"]
+        variants.append(duplicate_url)
+        empty_list = contest_response()
+        empty_list["result"]["problems"] = []
+        variants.append(empty_list)
+        bad_status = contest_response()
+        bad_status["status"] = "error"
+        variants.append(bad_status)
+        for index, response in enumerate(variants):
+            with self.subTest(index=index):
+                project = self.base / f"invalid-{index}"
+                env = self.env.copy()
+                env["FAKE_OJ_API_RESPONSE"] = json.dumps(response)
+                result = self.run_cli("new", "typical90", project, env=env)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(project.exists())
+                self.assertEqual(self.events(), [])
+
+    def test_new_contest_invalid_json_does_not_create_project(self):
+        for index, response in enumerate(("not valid json", "[]", "null", "42", '"wrong"')):
+            with self.subTest(response=response):
+                env = self.env.copy()
+                env["FAKE_OJ_API_RESPONSE"] = response
+                project = self.base / f"invalid-json-{index}"
+                result = self.run_cli("new", "typical90", project, env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertFalse(project.exists())
+                self.assertEqual(self.events(), [])
+
+    def test_new_contest_lookup_failure_leaves_no_project(self):
+        env = self.env.copy()
+        env["FAKE_OJ_API_FAIL"] = "1"
+        project = self.base / "lookup-failed"
+        result = self.run_cli("new", "typical90", project, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(project.exists())
+        self.assertEqual(self.events(), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_timeout_terminates_download_descendants(self):
+        spec = importlib.util.spec_from_file_location("new_contest_timeout_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        started = self.base / "descendant-started"
+        survived = self.base / "descendant-survived"
+        grandchild = (
+            "from pathlib import Path; import time; "
+            f"Path({str(started)!r}).write_text('started'); "
+            f"time.sleep(1.5); Path({str(survived)!r}).write_text('alive')"
+        )
+        child = (
+            "import subprocess,sys,time; "
+            f"subprocess.Popen([sys.executable,'-c',{grandchild!r}]); "
+            "time.sleep(20)"
+        )
+        real_popen = subprocess.Popen
+
+        def start_and_wait_for_descendant(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            deadline = time.monotonic() + 15
+            try:
+                while not started.exists():
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        raise AssertionError("descendant did not start")
+                    time.sleep(0.01)
+            except BaseException:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise
+            return process
+
+        # Begin the timeout only after the real descendant has signalled that
+        # it is running; a slow interpreter start must not make the test flaky.
+        with patch.object(module.subprocess, "Popen", side_effect=start_and_wait_for_descendant):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                module.run_problem([sys.executable, "-c", child], cwd=self.base,
+                                   env=self.env, timeout=0.25)
+        time.sleep(1.75)
+        self.assertFalse(survived.exists(), "download descendant survived the timeout")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_sigint_during_spawn_terminates_descendants(self):
+        spec = importlib.util.spec_from_file_location("new_contest_sigint_race_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        started = self.base / "sigint-spawn-started"
+        release = self.base / "sigint-spawn-release"
+        survived = self.base / "sigint-spawn-survived"
+        grandchild = (
+            "from pathlib import Path\nimport os, time\n"
+            f"Path({str(started)!r}).write_text(str(os.getpid()))\n"
+            f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+            f"Path({str(survived)!r}).write_text('alive')\n"
+        )
+        child = (
+            "import subprocess,sys,time; "
+            f"subprocess.Popen([sys.executable,'-c',{grandchild!r}]); "
+            "time.sleep(30)"
+        )
+        real_popen = subprocess.Popen
+        launched = []
+
+        def interrupt_before_popen_returns(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            launched.append(process)
+            deadline = time.monotonic() + 15
+            while not (started.exists() and started.read_text().strip().isdecimal()):
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError("descendant did not start")
+                time.sleep(0.01)
+            # run_problem has called Popen, but has not received its handle yet.
+            os.kill(os.getpid(), signal.SIGINT)
+            return process
+
+        try:
+            with patch.object(module.subprocess, "Popen", side_effect=interrupt_before_popen_returns):
+                with self.assertRaises(KeyboardInterrupt):
+                    module.run_problem([sys.executable, "-c", child], cwd=self.base,
+                                       env=self.env, timeout=10)
+            self.assertEqual(len(launched), 1)
+            self.assertIsNotNone(launched[0].poll(), "spawned process was not reaped")
+            release.write_text("go")
+            deadline = time.monotonic() + 2
+            while not survived.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(survived.exists(), "descendant survived SIGINT during Popen")
+        finally:
+            if launched:
+                # On a regression, verify group ownership before killing it.
+                candidates = [launched[0].pid]
+                if started.exists():
+                    descendant = started.read_text().strip()
+                    if descendant.isdecimal():
+                        candidates.append(int(descendant))
+                for pid in candidates:
+                    try:
+                        if os.getpgid(pid) == launched[0].pid:
+                            os.killpg(launched[0].pid, signal.SIGKILL)
+                            break
+                    except ProcessLookupError:
+                        pass
+                if launched[0].poll() is None:
+                    launched[0].wait(timeout=10)
+                if launched[0].stdout is not None:
+                    launched[0].stdout.close()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_sigterm_terminates_download_descendants(self):
+        self._assert_contest_signal_terminates_descendants("FAKE_OJ_BLOCK_UNTIL_TERMINATED")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_sigterm_terminates_lookup_descendants(self):
+        self._assert_contest_signal_terminates_descendants("FAKE_OJ_API_BLOCK_UNTIL_TERMINATED")
+        self.assertFalse((self.base / "sigterm-project").exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_ctrl_c_terminates_download_descendants(self):
+        self._assert_contest_signal_terminates_descendants("FAKE_OJ_BLOCK_UNTIL_TERMINATED", signal.SIGINT)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_ctrl_c_terminates_lookup_descendants(self):
+        self._assert_contest_signal_terminates_descendants("FAKE_OJ_API_BLOCK_UNTIL_TERMINATED", signal.SIGINT)
+        self.assertFalse((self.base / "sigterm-project").exists())
+
+    def _assert_contest_signal_terminates_descendants(self, block_env, interruption=signal.SIGTERM):
+        started = self.base / "sigterm-descendant-started"
+        release = self.base / "sigterm-descendant-release"
+        survived = self.base / "sigterm-descendant-survived"
+        env = self.env.copy()
+        env[block_env] = "1"
+        env.update(FAKE_SIGTERM_STARTED=str(started),
+                   FAKE_SIGTERM_RELEASE=str(release),
+                   FAKE_SIGTERM_SURVIVED=str(survived))
+        process = subprocess.Popen(
+            ["sbcl", "--script", str(CLI), "new",
+             "typical90", str(self.base / "sigterm-project")],
+            cwd=self.base, env=env, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+        descendant_pid = None
+        descendant_group = None
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if started.exists():
+                    fields = started.read_text().split()
+                    if len(fields) == 2 and all(x.isdecimal() for x in fields):
+                        descendant_pid, descendant_group = map(int, fields)
+                        break
+                if process.poll() is not None:
+                    self.fail("ac-lisp exited before the descendant started")
+                time.sleep(0.01)
+            self.assertIsNotNone(descendant_pid, "descendant did not start")
+            self.assertNotEqual(descendant_group, os.getpgrp())
+            if interruption == signal.SIGINT:
+                # Ctrl+C targets the terminal's foreground process group.
+                os.killpg(process.pid, signal.SIGINT)
+            else:
+                process.send_signal(interruption)
+            returncode = process.wait(timeout=10)
+            # A surviving descendant would write this after receiving the release.
+            release.write_text("go")
+            deadline = time.monotonic() + 2
+            while not survived.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(survived.exists(), f"descendant survived {interruption.name}")
+            self.assertNotEqual(returncode, 0, f"ac-lisp reported success after {interruption.name}")
+        finally:
+            # The outer helper may survive its SBCL parent on a regression;
+            # it inherited the session started specifically for this test.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if process.poll() is None:
+                process.wait(timeout=10)
+            if descendant_pid is not None:
+                try:
+                    # Avoid signalling an unrelated group if the PID was reused.
+                    if os.getpgid(descendant_pid) == descendant_group:
+                        os.killpg(descendant_group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_new_contest_missing_samples_continues_but_reports_incomplete(self):
+        env = self.env.copy()
+        env["FAKE_OJ_NO_SAMPLE_SUFFIX"] = "typical90_b"
+        project = self.base / "missing-sample"
+        result = self.run_cli("new", "typical90", project, env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((project / "002/main.lisp").is_file())
+        self.assertTrue((project / "003/test/sample-1.in").is_file())
+        self.assertEqual(len(self.events()), 3)
+        self.assertIn("002", result.stdout + result.stderr)
+
+    def test_new_contest_unexpected_download_failure_stops_and_keeps_files(self):
+        env = self.env.copy()
+        env["FAKE_OJ_FAIL_URL_SUFFIX"] = "typical90_b"
+        project = self.base / "download-failed"
+        result = self.run_cli("new", "typical90", project, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((project / "001/test/sample-1.in").is_file())
+        self.assertTrue((project / "002/main.lisp").is_file())
+        self.assertFalse((project / "003").exists())
+        self.assertEqual(len(self.events()), 2)
 
     def test_new_test_submit_and_cleanup(self):
         self.prepare()
@@ -264,9 +703,13 @@ class CliIntegration(unittest.TestCase):
     def test_real_legacy_oj_parses_binary_memory_units(self):
         python = os.environ["AC_LISP_TEST_OJ_PYTHON"]
         script = r'''
+from datetime import datetime, timezone
 import re
+from bs4 import BeautifulSoup
+import requests
 from onlinejudge.service import atcoder
 from onlinejudge.service.atcoder import AtCoderProblem, AtCoderProblemData
+from onlinejudge.type import SampleParseError
 problem = AtCoderProblem(contest_id="abc483", problem_id="abc483_a")
 for label, value, unit, expected in [
     ("Memory Limit", "1024", "MiB", 1073741824),
@@ -280,14 +723,40 @@ for label, value, unit, expected in [
     data = AtCoderProblemData._from_html(html, problem=problem)
     assert data.memory_limit_byte == expected, (unit, data.memory_limit_byte, expected)
     assert data.html == html
+
+for unit, value, expected in [
+    ('MiB', '1024', 1073741824),
+    ('KiB', '1001', 1025024),
+    ('MiB', '249', 261095424),
+    ('MB', '512', 512000000),
+    ('KB', '5', 5000),
+]:
+    html = ('<table><tr><td>A</td><td><a href="/contests/abc483/tasks/abc483_a">'
+            'Sample</a></td><td>2 sec</td><td>' + value + ' ' + unit + '</td></tr></table>')
+    row = BeautifulSoup(html, 'html.parser').find('tr')
+    data = AtCoderProblemData._from_table_row(row, session=requests.Session(),
+                                              response=requests.Response(),
+                                              timestamp=datetime.now(timezone.utc))
+    assert data.memory_limit_byte == expected, (unit, data.memory_limit_byte, expected)
 assert atcoder.re is re
 bad = b'<span class="h2">A - Sample</span><p>Time Limit: 2 sec / Memory Limit: 1 GB</p>'
 try:
     AtCoderProblemData._from_html(bad, problem=problem)
-except AssertionError:
+except (AssertionError, SampleParseError):
     pass
 else:
     raise AssertionError("unexpectedly accepted unsupported unit")
+bad_row = BeautifulSoup('<table><tr><td>A</td><td><a href="/contests/abc483/tasks/abc483_a">'
+                        'Sample</a></td><td>2 sec</td><td>1 GB</td></tr></table>',
+                        'html.parser').find('tr')
+try:
+    AtCoderProblemData._from_table_row(bad_row, session=requests.Session(),
+                                       response=requests.Response(),
+                                       timestamp=datetime.now(timezone.utc))
+except (AssertionError, ValueError):
+    pass
+else:
+    raise AssertionError("unexpectedly accepted unsupported table row unit")
 '''
         env = self.env.copy()
         env["PYTHONPATH"] = str(ROOT / "tools/oj-compat")
