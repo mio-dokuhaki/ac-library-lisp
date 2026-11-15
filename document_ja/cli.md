@@ -87,6 +87,17 @@ uv venv ~/.local/share/ac-lisp/venv
 uv pip install --python ~/.local/share/ac-lisp/venv/bin/python 'browser-cookie3==0.20.1'
 ```
 
+ブラウザのログイン情報を取り込む際は、次のようにこの Python を指定できます。
+指定はこのコマンドの実行時だけに適用されます。
+
+```sh
+env AC_LISP_PYTHON="$HOME/.local/share/ac-lisp/venv/bin/python" ac-lisp login --browser edge --profile ~/.config/microsoft-edge/Default
+```
+
+インポーターは設定済みの `AC_LISP_PYTHON` を使います。未設定の場合は
+`${XDG_DATA_HOME:-$HOME/.local/share}/ac-lisp/venv/bin/python` を探し、
+ファイルがなければ `python3` を使います。既存の `AC_LISP_PYTHON` や独自の `XDG_DATA_HOME` があると、
+上で導入したものとは別の Python が選ばれる場合があります。
 別の Python 環境を使う場合は `browser-cookie3` を導入し、その実行ファイルを
 `AC_LISP_PYTHON` で指定してください。セッションを検証してから `oj` の AtCoder 用
 Cookie を更新し、他サイトの Cookie は保持します。Firefox と LibreWolf は

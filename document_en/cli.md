@@ -86,7 +86,17 @@ uv venv ~/.local/share/ac-lisp/venv
 uv pip install --python ~/.local/share/ac-lisp/venv/bin/python 'browser-cookie3==0.20.1'
 ```
 
-Alternatively, install `browser-cookie3` in your Python environment and set
+For a browser import, explicitly use that interpreter for this command:
+
+```sh
+env AC_LISP_PYTHON="$HOME/.local/share/ac-lisp/venv/bin/python" ac-lisp login --browser edge --profile ~/.config/microsoft-edge/Default
+```
+
+The importer uses `AC_LISP_PYTHON` if set; otherwise, it looks for
+`${XDG_DATA_HOME:-$HOME/.local/share}/ac-lisp/venv/bin/python` and falls back to
+`python3` if that file is absent. An existing `AC_LISP_PYTHON` or a custom
+`XDG_DATA_HOME` can therefore select a different Python from the one above.
+Alternatively, install `browser-cookie3` in another Python environment and set
 `AC_LISP_PYTHON` to that interpreter. The importer validates the session before
 replacing AtCoder cookies in the `oj` jar, preserving cookies for other sites.
 Firefox and LibreWolf imports use persistent cookies in `cookies.sqlite`; a
