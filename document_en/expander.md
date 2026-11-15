@@ -3,8 +3,11 @@
 `expander.lisp` turns a solution that uses `acl-include` into one self-contained file for
 submission. It replaces ACL's `expander.py` and is written in Common Lisp.
 
+From the directory containing `main.lisp`, run the following command, replacing
+`/path/to/ac-library-lisp` with the actual path to your checkout:
+
 ```sh
-sbcl --script expander.lisp main.lisp -o combined.lisp
+sbcl --script "/path/to/ac-library-lisp/expander.lisp" main.lisp -o combined.lisp
 ```
 
 * A line whose first form is `(acl-include :module ...)` is replaced by the source of those

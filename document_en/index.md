@@ -19,6 +19,23 @@ range is half-open `[l, r)`, as in the original AtCoder Library.
 | `:twosat` | [twosat.md](twosat.md) |
 | expander | [expander.md](expander.md) |
 
+## ACL mapping
+
+| ACL (C++) | Lisp module | Main API |
+| --- | --- | --- |
+| `dsu` | `:dsu` | `make-dsu`, `dsu-merge`, `dsu-same`, `dsu-leader`, `dsu-size`, `dsu-groups` |
+| `fenwick_tree` | `:fenwicktree` | `make-fenwick-tree`, `fenwick-tree-add`, `fenwick-tree-sum` |
+| `segtree` | `:segtree` | `make-segtree`, `define-segtree`, `segtree-prod`, `segtree-max-right`, ... |
+| `lazy_segtree` | `:lazysegtree` | `make-lazy-segtree`, `define-lazy-segtree`, `lazy-segtree-apply`, ... |
+| `suffix_array`, `lcp_array`, `z_algorithm` | `:string` | `suffix-array`, `lcp-array`, `z-algorithm` |
+| `pow_mod`, `inv_mod`, `crt`, `floor_sum` | `:math` | `pow-mod`, `inv-mod`, `crt`, `floor-sum` |
+| `static_modint`, `dynamic_modint` | `:modint` | `define-modint`, `define-dynamic-modint`, `modint998244353*`, ... |
+| `convolution`, `convolution_ll` | `:convolution` | `convolution`, `convolution-ll` |
+| `mf_graph` | `:maxflow` | `make-mf-graph`, `mf-graph-add-edge`, `mf-graph-flow`, `mf-graph-min-cut`, ... |
+| `mcf_graph` | `:mincostflow` | `make-mcf-graph`, `mcf-graph-add-edge`, `mcf-graph-flow`, `mcf-graph-slope`, ... |
+| `scc_graph` | `:scc` | `make-scc-graph`, `scc-graph-add-edge`, `scc-graph-scc` |
+| `two_sat` | `:twosat` | `make-two-sat`, `two-sat-add-clause`, `two-sat-satisfiable`, `two-sat-answer` |
+
 ## Performance notes
 
 * Put `(declaim (optimize (speed 3) (safety 0)))` at the top of a contest solution once it is
