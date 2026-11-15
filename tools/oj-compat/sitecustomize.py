@@ -23,6 +23,7 @@ def load_existing_sitecustomize():
 load_existing_sitecustomize()
 
 import decimal
+import copy
 import re
 import types
 
@@ -73,3 +74,40 @@ def apply_compatibility():
 
 
 apply_compatibility()
+
+
+def apply_contest_compatibility():
+    """Teach old contest-list parsers about AtCoder's binary units."""
+    try:
+        from onlinejudge.service.atcoder import AtCoderProblemData
+    except ImportError:
+        return
+
+    original = getattr(getattr(AtCoderProblemData, '_from_table_row', None), '__func__', None)
+    code = getattr(original, '__code__', None)
+    if (code is None or ' KB' not in code.co_consts or ' MB' not in code.co_consts
+            or ' KiB' in code.co_consts or ' MiB' in code.co_consts):
+        return
+
+    pattern = re.compile(r'\s*([0-9]+(?:\.[0-9]+)?) (KiB|MiB)\s*\Z')
+
+    def parse(cls, tr, **kwargs):
+        columns = tr.find_all('td')
+        match = pattern.fullmatch(columns[3].text) if 4 <= len(columns) <= 5 else None
+        if not match:
+            return original(cls, tr, **kwargs)
+        # Feed a copy to the legacy parser so the caller's HTML is untouched.
+        row = copy.deepcopy(tr)
+        unit = 'KB' if match.group(2) == 'KiB' else 'MB'
+        cell = row.find_all('td')[3]
+        cell.clear()
+        cell.append(f'{match.group(1)} {unit}')
+        result = original(cls, row, **kwargs)
+        factor = 1024 if match.group(2) == 'KiB' else 1024 * 1024
+        result.memory_limit_byte = int(decimal.Decimal(match.group(1)) * factor)
+        return result
+
+    AtCoderProblemData._from_table_row = classmethod(parse)
+
+
+apply_contest_compatibility()

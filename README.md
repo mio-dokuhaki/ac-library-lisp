@@ -52,7 +52,33 @@ ac-lisp submit
 ```
 
 `new URL [DIR]` saves the exact problem URL in `problem-url.txt` and refuses to
-overwrite an existing directory. `test [DIR]` expands the solution, compiles it
+overwrite an existing directory.
+
+To prepare every problem in an AtCoder contest at once, pass a contest ID, the
+contest URL, or its `/tasks` URL instead:
+
+```sh
+ac-lisp new typical90
+# URL form; the optional second argument selects the workspace directory:
+ac-lisp new https://atcoder.jp/contests/abc484/tasks abc484-work
+cd typical90/007
+# Edit main.lisp, then run ac-lisp test.
+```
+
+The default workspace directory is the contest ID. Each problem directory uses
+its official label from the task list, such as `001` or `A`, and contains a
+solution template, its URL, and any downloaded samples. Contest setup requires `python3`, `oj`,
+and `oj-api` on `PATH`. It fetches samples sequentially. If samples cannot be
+found for a problem, setup warns and continues with the other problems, then
+exits with a nonzero status. Other failures, including network failures, stop
+setup. In either case, already created files remain for inspection; an existing
+destination is never overwritten. Interactive tasks need a separate interactive
+judge; the current `test` and `submit` commands require ordinary sample files and
+do not support interactive testing or submission. There is no automatic resume:
+after an interruption, inspect the existing files and use `ac-lisp new TASK_URL
+workspace/LABEL` for each problem whose directory was not created.
+
+`test [DIR]` expands the solution, compiles it
 with SBCL and runs the downloaded samples. `submit [DIR]` repeats the tests and
 passes the expanded source to `oj`, which asks for confirmation. The default
 language selector is `SBCL`; use `--language ID` when necessary. The language is
@@ -61,7 +87,8 @@ Sample files must be regular files in `test/`, with matching `.in` and `.out`
 names. Hidden inputs, symlinks, and subdirectories are rejected; other files are
 not run. Tests use a temporary snapshot of the sample pairs.
 
-For `submit`, the CLI applies a process-local compatibility fix when it detects
+For contest lookup, sample download, and `submit`, the CLI applies a process-local
+compatibility fix when it detects
 the older `online-judge-api-client` parser that cannot read AtCoder's `KiB` and
 `MiB` memory limits. The installed `oj` package is not modified. This requires a
 normal Python `oj` installation that loads `sitecustomize` at startup; an updated
@@ -227,6 +254,29 @@ ac-lisp submit
 ```
 
 `new URL [DIR]` は問題 URL とサンプルを保存し、既存ディレクトリは上書きしません。
+
+AtCoder のコンテスト ID、コンテスト URL、または `/tasks` URL を渡すと、
+コンテストの全問題をまとめて準備できます。
+
+```sh
+ac-lisp new typical90
+# URL も使用でき、第2引数で作成先のディレクトリを指定できます。
+ac-lisp new https://atcoder.jp/contests/abc484/tasks abc484-work
+cd typical90/007
+# main.lisp を編集してから ac-lisp test を実行
+```
+
+作成先の既定名はコンテスト ID です。各問題は `001` や `A` のような公式の問題
+ラベルを名前とするディレクトリに作られ、解答の雛形、問題 URL、取得できたサンプルが入ります。
+コンテストの一括作成には PATH 上の `python3`、`oj`、`oj-api` が必要です。
+サンプルは順番に取得します。サンプルが見つからない問題は警告して他の問題を
+続け、最後に非ゼロの終了状態を返します。通信エラーなどその他の失敗では停止します。
+いずれの場合も作成済みファイルは残り、既存の作成先は上書きしません。
+インタラクティブ問題には別途対話用のジャッジが必要です。現在の `test` と `submit` は
+通常のサンプルファイルを必要とするため、インタラクティブ問題には対応していません。
+自動再開機能はありません。途中で停止した場合は作成済みファイルを確認し、まだ作成されて
+いない問題ごとに `ac-lisp new 問題URL workspace/問題ラベル` を実行してください。
+
 `test [DIR]` は展開したコードを SBCL でコンパイルし、サンプルを実行します。
 `submit [DIR]` はテスト後に `oj` を呼び出し、確認を経て提出します。言語は
 コンテストの一覧から `SBCL` を選択し、必要なら `--language ID` で指定できます。
@@ -234,7 +284,8 @@ ac-lisp submit
 隠し入力・シンボリックリンク・サブディレクトリはエラーになり、その他のファイルは
 実行しません。テストにはサンプルの一時コピーを使用します。
 
-`submit` 時には、AtCoder のメモリ制限 `KiB` / `MiB` を読み取れない古い
+コンテスト一覧の取得、サンプルのダウンロード、`submit` 時には、AtCoder の
+メモリ制限 `KiB` / `MiB` を読み取れない古い
 `online-judge-api-client` を検出した場合、そのプロセス内だけに互換修正を適用します。
 インストール済みの `oj` 自体は変更しません。起動時に `sitecustomize` を読み込む通常の
 Python 版 `oj` が必要です。修正済みの新しいクライアントには適用せず、既存の
