@@ -2,7 +2,14 @@
 
 ### Manual expansion
 
-Save the following as `main.lisp` in your problem directory:
+To try the expander without changing a problem solution, create a new scratch
+directory. If `acl-demo` already exists, choose a different name:
+
+```sh
+mkdir acl-demo && cd acl-demo
+```
+
+Save the following demonstration as `main.lisp` in that new directory:
 
 ```lisp
 (acl-include :dsu)
@@ -20,10 +27,13 @@ sbcl --script "/path/to/ac-library-lisp/expander.lisp" main.lisp -o combined.lis
 sbcl --script combined.lisp
 ```
 
-`combined.lisp` contains the requested modules and dependencies, ready for
-submission. Use `(acl-include :all)` for every module. Each `acl-include` must
-be a top-level form on its own line; see the [expander guide](expander.md)
-for the full rules.
+The demonstration prints `T`. To expand a real solution, run the same expansion
+command from its problem directory, where `main.lisp` already contains your
+solution. `combined.lisp` contains the requested modules and dependencies and
+can be submitted. Choose an output name that does not already exist: `-o`
+overwrites its target. Use `(acl-include :all)` for every module. Each
+`acl-include` must be a top-level form on its own line; see the
+[expander guide](expander.md) for the full rules.
 
 ## Using it as a normal library
 

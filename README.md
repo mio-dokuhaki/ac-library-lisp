@@ -85,6 +85,6 @@ ac-lisp submit
 
 - [詳しい使い方・ログイン・提出時の注意](document_ja/cli.md)
 - [モジュール一覧と API（英語）](document_en/index.md)
-- [手動での展開方法（英語）](document_en/expander.md)
+- [手動展開とライブラリとしての使い方（英語）](document_en/getting-started.md)
 
 ライセンスは [CC0 1.0](LICENSE) です。
