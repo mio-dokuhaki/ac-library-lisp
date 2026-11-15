@@ -36,7 +36,7 @@ Python 3 and [online-judge-tools](https://github.com/online-judge-tools/oj). For
 example, with [uv](https://docs.astral.sh/uv/):
 
 ```sh
-uv tool install --python 3.13 --with setuptools online-judge-tools
+uv tool install --python 3.13 --with setuptools --with-executables-from online-judge-api-client online-judge-tools
 ln -s /path/to/ac-library-lisp/bin/ac-lisp ~/.local/bin/ac-lisp
 ```
 
@@ -238,7 +238,7 @@ AtCoder で使われている SBCL を対象にしています。
 例えば uv を使う場合:
 
 ```sh
-uv tool install --python 3.13 --with setuptools online-judge-tools
+uv tool install --python 3.13 --with setuptools --with-executables-from online-judge-api-client online-judge-tools
 ln -s /path/to/ac-library-lisp/bin/ac-lisp ~/.local/bin/ac-lisp
 ```
 
