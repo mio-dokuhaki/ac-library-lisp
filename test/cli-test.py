@@ -230,10 +230,33 @@ class CliIntegration(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         (self.problem / "main.lisp").write_text(SOLUTION)
 
+    def test_contest_rate_limit_counts_time_spent_downloading(self):
+        spec = importlib.util.spec_from_file_location("new_contest_pacing_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module.time, "monotonic", return_value=100.7), \
+             patch.object(module.time, "sleep") as sleep:
+            module.wait_for_next_start(100.0)
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], 0.3)
+
+    def test_contest_rate_limit_does_not_wait_after_a_slow_download(self):
+        spec = importlib.util.spec_from_file_location("new_contest_no_wait_test", ROOT / "tools/new-contest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module.time, "monotonic", return_value=102.0), \
+             patch.object(module.time, "sleep") as sleep:
+            module.wait_for_next_start(100.0)
+        sleep.assert_not_called()
+
     def test_new_contest_id_uses_official_labels_and_downloads_each_problem(self):
         project = self.base / "contest with spaces"
         result = self.run_cli("new", "typical90", project)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("[1/3]", result.stdout)
+        self.assertIn("[3/3]", result.stdout)
+        self.assertNotIn("\r", result.stdout)
+        self.assertNotIn("\x1b", result.stdout)
         for number, suffix in (("001", "a"), ("002", "b"), ("003", "c")):
             task = project / number
             self.assertTrue((task / "main.lisp").is_file())
@@ -242,6 +265,109 @@ class CliIntegration(unittest.TestCase):
             self.assertEqual((task / "test/sample-1.in").read_text(), SAMPLE_INPUT)
             self.assertEqual((task / "test/sample-1.out").read_text(), SAMPLE_OUTPUT)
         self.assertEqual([e["args"][0] for e in self.events()], ["download"] * 3)
+
+    def run_contest_on_terminal(self, project, env, columns=None):
+        import errno
+        import fcntl
+        import pty
+        import select
+        import struct
+        import termios
+
+        master, slave = pty.openpty()
+        if columns is not None:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
+        process = None
+        output = bytearray()
+        try:
+            process = subprocess.Popen(["sbcl", "--script", str(CLI), "new", "typical90", str(project)],
+                                       cwd=self.base, env=env, stdout=slave, stderr=slave)
+            os.close(slave)
+            slave = None
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.1)
+                if ready:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                elif process.poll() is not None:
+                    break
+            else:
+                self.fail("contest setup did not finish on a pseudo-terminal")
+            returncode = process.wait(timeout=5)
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+            if slave is not None:
+                os.close(slave)
+            os.close(master)
+        return returncode, output.decode("utf-8", errors="replace")
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_tty_shows_completed_progress(self):
+        env = self.env.copy()
+        env["TERM"] = "xterm-256color"
+        returncode, display = self.run_contest_on_terminal(self.base / "terminal contest", env)
+        self.assertEqual(returncode, 0, display)
+        self.assertIn("\r[", display)
+        self.assertIn("3/3", display)
+        self.assertIn("100%", display)
+        self.assertIn("ETA", display)
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_tty_progress_fits_narrow_terminal(self):
+        env = self.env.copy()
+        env["TERM"] = "xterm-256color"
+        columns = 40
+        returncode, display = self.run_contest_on_terminal(self.base / "narrow terminal", env, columns)
+        self.assertEqual(returncode, 0, display)
+        updates = [part.split("\n", 1)[0] for part in display.split("\r") if part.startswith("[")]
+        self.assertTrue(updates, display)
+        self.assertTrue(all(len(line) < columns for line in updates), updates)
+        self.assertTrue(any("100%" in line for line in updates), updates)
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_dumb_terminal_uses_plain_progress(self):
+        env = self.env.copy()
+        env["TERM"] = "dumb"
+        returncode, display = self.run_contest_on_terminal(self.base / "dumb terminal", env)
+        self.assertEqual(returncode, 0, display)
+        self.assertIn("[1/3]", display)
+        self.assertIn("[3/3]", display)
+        self.assertNotIn("\x1b", display)
+        self.assertNotIn("\r", display.replace("\r\n", "\n"))
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_tty_keeps_warnings_visible_and_continues(self):
+        env = self.env.copy()
+        env["TERM"] = "xterm-256color"
+        env["FAKE_OJ_NO_SAMPLE_SUFFIX"] = "typical90_b"
+        project = self.base / "tty missing samples"
+        returncode, display = self.run_contest_on_terminal(project, env)
+        self.assertNotEqual(returncode, 0, display)
+        self.assertRegex(display, r"Warning: samples not found for 002[^\r\n]*\r\n")
+        self.assertIn("3/3", display)
+        self.assertIn("100%", display)
+        self.assertTrue((project / "003/test/sample-1.in").is_file())
+
+    @unittest.skipUnless(os.name == "posix", "pseudo-terminal availability")
+    def test_new_contest_tty_keeps_download_error_visible(self):
+        env = self.env.copy()
+        env["TERM"] = "xterm-256color"
+        env["FAKE_OJ_FAIL_URL_SUFFIX"] = "typical90_b"
+        project = self.base / "tty download failure"
+        returncode, display = self.run_contest_on_terminal(project, env)
+        self.assertNotEqual(returncode, 0, display)
+        self.assertIn("\r\n[ERROR] simulated download failure\r\n", display)
+        self.assertFalse((project / "003").exists())
 
     def test_new_contest_url_and_tasks_url(self):
         env = self.env.copy()

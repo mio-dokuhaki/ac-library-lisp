@@ -69,7 +69,10 @@ cd typical90/007
 The default workspace directory is the contest ID. Each problem directory uses
 its official label from the task list, such as `001` or `A`, and contains a
 solution template, its URL, and any downloaded samples. Contest setup requires `python3`, `oj`,
-and `oj-api` on `PATH`. It fetches samples sequentially. If samples cannot be
+and `oj-api` on `PATH`. Sample downloads run sequentially, with at least one
+second between launches; download time counts toward this interval. Interactive
+terminals show a progress bar, while redirected output shows one line per task.
+If samples cannot be
 found for a problem, setup warns and continues with the other problems, then
 exits with a nonzero status. Other failures, including network failures, stop
 setup. In either case, already created files remain for inspection; an existing
@@ -271,7 +274,9 @@ cd typical90/007
 作成先の既定名はコンテスト ID です。各問題は `001` や `A` のような公式の問題
 ラベルを名前とするディレクトリに作られ、解答の雛形、問題 URL、取得できたサンプルが入ります。
 コンテストの一括作成には PATH 上の `python3`、`oj`、`oj-api` が必要です。
-サンプルは順番に取得します。サンプルが見つからない問題は警告して他の問題を
+サンプルは直列に取得し、各処理の開始を 1 秒以上空けます。ダウンロード時間も
+この間隔に含まれます。端末では進捗バー、リダイレクト時は問題ごとの進捗を表示します。
+サンプルが見つからない問題は警告して他の問題を
 続け、最後に非ゼロの終了状態を返します。通信エラーなどその他の失敗では停止します。
 いずれの場合も作成済みファイルは残り、既存の作成先は上書きしません。
 インタラクティブ問題には別途対話用のジャッジが必要です。現在の `test` と `submit` は
