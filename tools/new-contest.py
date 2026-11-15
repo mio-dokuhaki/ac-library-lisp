@@ -9,10 +9,11 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPONENT = r"[A-Za-z0-9_-]+"
-CONTEST = re.compile(rf"(?:https://atcoder\.jp/contests/)?({COMPONENT})(?:/tasks)?/?\Z")
+CONTEST_PATH = re.compile(rf"/contests/({COMPONENT})(?:/tasks)?/?\Z")
 LABEL = re.compile(rf"{COMPONENT}\Z")
 
 
@@ -28,12 +29,16 @@ def run_problem(command, *, cwd, env, timeout=120, stderr=subprocess.STDOUT):
 
     process = None
     terminating = False
+    interrupting = False
     cleaning = False
     # Only replace the default action. An embedding caller's custom handler or
     # explicit SIG_IGN must retain its existing behavior.
     handle_sigterm = (os.name == "posix"
                       and threading.current_thread() is threading.main_thread()
                       and signal.getsignal(signal.SIGTERM) == signal.SIG_DFL)
+    handle_sigint = (os.name == "posix"
+                     and threading.current_thread() is threading.main_thread()
+                     and signal.getsignal(signal.SIGINT) == signal.default_int_handler)
     if handle_sigterm:
         def request_termination(signum, frame):
             nonlocal terminating
@@ -43,6 +48,15 @@ def run_problem(command, *, cwd, env, timeout=120, stderr=subprocess.STDOUT):
                     raise TerminationRequested()
 
         signal.signal(signal.SIGTERM, request_termination)
+    if handle_sigint:
+        def request_interrupt(signum, frame):
+            nonlocal interrupting
+            if not interrupting:
+                interrupting = True
+                if process is not None and not cleaning:
+                    raise KeyboardInterrupt
+
+        signal.signal(signal.SIGINT, request_interrupt)
     try:
         process = subprocess.Popen(
             command, cwd=cwd, env=env, stdout=subprocess.PIPE,
@@ -53,6 +67,8 @@ def run_problem(command, *, cwd, env, timeout=120, stderr=subprocess.STDOUT):
         # process handle is available, so its group can still be stopped.
         if terminating:
             raise TerminationRequested()
+        if interrupting:
+            raise KeyboardInterrupt
         output, error_output = process.communicate(timeout=timeout)
     except BaseException:
         cleaning = True
@@ -72,26 +88,39 @@ def run_problem(command, *, cwd, env, timeout=120, stderr=subprocess.STDOUT):
             except ProcessLookupError:
                 pass
             process.wait()
-            if process.stdout is not None:
-                process.stdout.close()
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
         if terminating:
             # Match the ordinary default SIGTERM exit status after cleanup.
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
             os.kill(os.getpid(), signal.SIGTERM)
+        if interrupting:
+            raise KeyboardInterrupt
         raise
     finally:
         if handle_sigterm:
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        if handle_sigint:
+            signal.signal(signal.SIGINT, signal.default_int_handler)
     return subprocess.CompletedProcess(command, process.returncode, output, error_output)
 
 
 def main(args):
     if not 1 <= len(args) <= 2:
         return fail("contest setup requires CONTEST [DIR]")
-    match = CONTEST.fullmatch(args[0])
-    if not match:
-        return fail("expected an AtCoder contest ID or URL")
-    contest = match.group(1)
+    target = args[0]
+    if LABEL.fullmatch(target):
+        contest = target
+    else:
+        try:
+            parsed = urlsplit(target)
+        except ValueError:
+            return fail("expected an AtCoder contest ID or URL")
+        match = CONTEST_PATH.fullmatch(parsed.path)
+        if parsed.scheme != "https" or parsed.netloc != "atcoder.jp" or not match:
+            return fail("expected an AtCoder contest ID or URL")
+        contest = match.group(1)
     contest_url = f"https://atcoder.jp/contests/{contest}"
     destination = Path(args[1] if len(args) == 2 else contest)
     # lexists rejects dangling symlinks as well as existing files and directories.

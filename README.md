@@ -55,7 +55,8 @@ ac-lisp submit
 overwrite an existing directory.
 
 To prepare every problem in an AtCoder contest at once, pass a contest ID, the
-contest URL, or its `/tasks` URL instead:
+contest URL, or its `/tasks` URL instead. Query strings such as `?lang=ja`
+and URL fragments are accepted:
 
 ```sh
 ac-lisp new typical90
@@ -256,7 +257,8 @@ ac-lisp submit
 `new URL [DIR]` は問題 URL とサンプルを保存し、既存ディレクトリは上書きしません。
 
 AtCoder のコンテスト ID、コンテスト URL、または `/tasks` URL を渡すと、
-コンテストの全問題をまとめて準備できます。
+コンテストの全問題をまとめて準備できます。`?lang=ja` などのクエリや URL の
+アンカーが付いていても指定できます。
 
 ```sh
 ac-lisp new typical90

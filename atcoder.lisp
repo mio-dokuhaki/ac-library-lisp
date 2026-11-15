@@ -29,21 +29,21 @@
       (fail "~A failed (status ~A)" program (sb-ext:process-exit-code process)))))
 
 (defun run-terminable (program arguments)
-  "Run a helper, forwarding SIGTERM and waiting for its cleanup."
+  "Run a helper, forwarding termination signals and waiting for cleanup."
   (let ((process nil)
         (terminated nil))
-    (flet ((terminate-child ()
-             (when (and process (sb-ext:process-alive-p process))
-               (sb-ext:process-kill process sb-unix:sigterm))))
+    (labels ((terminate-child ()
+               (when (and process (sb-ext:process-alive-p process))
+                 (sb-ext:process-kill process terminated)))
+             (handle-termination (signal info context)
+               (declare (ignore info context))
+               (unless terminated
+                 (setf terminated signal)
+                 (terminate-child))))
       (unwind-protect
            (progn
-             (sb-sys:enable-interrupt
-              sb-unix:sigterm
-              (lambda (signal info context)
-                (declare (ignore signal info context))
-                (unless terminated
-                  (setf terminated t)
-                  (terminate-child))))
+             (sb-sys:enable-interrupt sb-unix:sigterm #'handle-termination)
+             (sb-sys:enable-interrupt sb-unix:sigint #'handle-termination)
              (setf process
                    (handler-case
                        (sb-ext:run-program program arguments :search t :wait nil
@@ -52,11 +52,12 @@
              ;; A signal can arrive while RUN-PROGRAM is creating the child.
              (when terminated (terminate-child))
              (sb-ext:process-wait process)
-             (when terminated (sb-ext:exit :code 143))
+             (when terminated (sb-ext:exit :code (+ 128 terminated)))
              (unless (and (eq (sb-ext:process-status process) :exited)
                           (zerop (sb-ext:process-exit-code process)))
                (fail "~A failed (status ~A)" program (sb-ext:process-exit-code process))))
-        (sb-sys:enable-interrupt sb-unix:sigterm :default)))))
+        (sb-sys:enable-interrupt sb-unix:sigterm :default)
+        (sb-sys:enable-interrupt sb-unix:sigint :default)))))
 
 (defun oj-compat-environment ()
   (let* ((compat (namestring (merge-pathnames "tools/oj-compat/" *root*)))
@@ -266,10 +267,13 @@
       ((or (null command) (member command '("-h" "--help" "help") :test #'string=)) (usage))
       ((string= command "new")
        (unless (<= 1 (length args) 2) (fail "new requires URL or contest ID [DIR]"))
-       (let ((target (first args)))
+       (let* ((target (first args))
+              (path-end (min (or (position #\? target) (length target))
+                             (or (position #\# target) (length target))))
+              (target-path (subseq target 0 path-end)))
          (if (or (valid-component-p target)
-                 (and (uiop:string-prefix-p "https://atcoder.jp/contests/" target)
-                      (not (search "/tasks/" (string-right-trim "/" target)))))
+                 (and (uiop:string-prefix-p "https://atcoder.jp/contests/" target-path)
+                      (not (search "/tasks/" (string-right-trim "/" target-path)))))
              (run-terminable "python3" (append (list (namestring (merge-pathnames "tools/new-contest.py" *root*))) args))
              (new-problem target (second args)))))
       ((string= command "login")
