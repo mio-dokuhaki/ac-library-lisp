@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,17 +21,42 @@ def fail(message):
     return 1
 
 
-def run_problem(command, *, cwd, env, timeout=120):
-    """Run one setup, stopping its process group if setup is interrupted."""
-    process = subprocess.Popen(
-        command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-        start_new_session=(os.name == "posix"),
-    )
+def run_problem(command, *, cwd, env, timeout=120, stderr=subprocess.STDOUT):
+    """Run a helper, stopping its process group if work is interrupted."""
+    class TerminationRequested(BaseException):
+        pass
+
+    process = None
+    terminating = False
+    cleaning = False
+    # Only replace the default action. An embedding caller's custom handler or
+    # explicit SIG_IGN must retain its existing behavior.
+    handle_sigterm = (os.name == "posix"
+                      and threading.current_thread() is threading.main_thread()
+                      and signal.getsignal(signal.SIGTERM) == signal.SIG_DFL)
+    if handle_sigterm:
+        def request_termination(signum, frame):
+            nonlocal terminating
+            if not terminating:
+                terminating = True
+                if process is not None and not cleaning:
+                    raise TerminationRequested()
+
+        signal.signal(signal.SIGTERM, request_termination)
     try:
-        output, _ = process.communicate(timeout=timeout)
+        process = subprocess.Popen(
+            command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+            stderr=stderr, text=True, encoding="utf-8", errors="replace",
+            start_new_session=(os.name == "posix"),
+        )
+        # A SIGTERM delivered while Popen was starting is deferred until the
+        # process handle is available, so its group can still be stopped.
+        if terminating:
+            raise TerminationRequested()
+        output, error_output = process.communicate(timeout=timeout)
     except BaseException:
-        if os.name == "posix":
+        cleaning = True
+        if process is not None and os.name == "posix":
             # The direct process can already have exited while its oj child
             # still holds the output pipe; kill the whole group in either case.
             try:
@@ -38,7 +64,7 @@ def run_problem(command, *, cwd, env, timeout=120):
             except ProcessLookupError:
                 pass
             process.communicate()
-        else:
+        elif process is not None:
             # No portable process-group termination exists outside POSIX.
             # Reap the child and close our pipe even if a descendant holds it.
             try:
@@ -48,8 +74,15 @@ def run_problem(command, *, cwd, env, timeout=120):
             process.wait()
             if process.stdout is not None:
                 process.stdout.close()
+        if terminating:
+            # Match the ordinary default SIGTERM exit status after cleanup.
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGTERM)
         raise
-    return subprocess.CompletedProcess(command, process.returncode, output)
+    finally:
+        if handle_sigterm:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    return subprocess.CompletedProcess(command, process.returncode, output, error_output)
 
 
 def main(args):
@@ -73,10 +106,9 @@ def main(args):
     api_env["PYTHONPATH"] = (compat + os.pathsep + previous_pythonpath
                              if previous_pythonpath else compat)
     try:
-        result = subprocess.run(
-            ["oj-api", "get-contest", contest_url], env=api_env,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", timeout=60,
+        result = run_problem(
+            ["oj-api", "get-contest", contest_url], cwd=None, env=api_env,
+            stderr=subprocess.PIPE, timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         return fail(f"cannot retrieve contest problem list: {error}")

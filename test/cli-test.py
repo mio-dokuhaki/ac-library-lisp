@@ -62,6 +62,21 @@ if command == "login" and os.environ.get("FAKE_CONCURRENT_JAR"):
 if os.environ.get("FAKE_OJ_FAIL") == command:
     sys.exit(17)
 if command == "download":
+    if os.environ.get("FAKE_OJ_BLOCK_UNTIL_TERMINATED"):
+        grandchild = r"""
+import os, pathlib, time
+pathlib.Path(os.environ["FAKE_SIGTERM_STARTED"]).write_text(
+    f"{os.getpid()} {os.getpgrp()}")
+release = pathlib.Path(os.environ["FAKE_SIGTERM_RELEASE"])
+while not release.exists():
+    time.sleep(0.02)
+pathlib.Path(os.environ["FAKE_SIGTERM_SURVIVED"]).write_text("alive")
+time.sleep(30)
+"""
+        subprocess.Popen([sys.executable, '-c', grandchild],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(30)
+        sys.exit(1)
     if args[1].endswith(os.environ.get("FAKE_OJ_NO_SAMPLE_SUFFIX", "\0")):
         sys.stderr.write("[ERROR] Sample not found\n")
         sys.exit(1)
@@ -95,7 +110,7 @@ elif command == "test":
 '''
 
 FAKE_OJ_API = r'''#!/usr/bin/env python3
-import json, os, sys
+import json, os, subprocess, sys, time
 with open(os.environ['FAKE_OJ_API_LOG'], 'a') as out:
     out.write(json.dumps({'args': sys.argv[1:],
                           'pythonpath': os.environ.get('PYTHONPATH'),
@@ -104,6 +119,21 @@ with open(os.environ['FAKE_OJ_API_LOG'], 'a') as out:
 if os.environ.get('FAKE_OJ_API_FAIL'):
     sys.stderr.write('simulated contest lookup failure\n')
     sys.exit(17)
+if os.environ.get('FAKE_OJ_API_BLOCK_UNTIL_TERMINATED'):
+    grandchild = r"""
+import os, pathlib, time
+pathlib.Path(os.environ["FAKE_SIGTERM_STARTED"]).write_text(
+    f"{os.getpid()} {os.getpgrp()}")
+release = pathlib.Path(os.environ["FAKE_SIGTERM_RELEASE"])
+while not release.exists():
+    time.sleep(0.02)
+pathlib.Path(os.environ["FAKE_SIGTERM_SURVIVED"]).write_text("alive")
+time.sleep(30)
+"""
+    subprocess.Popen([sys.executable, '-c', grandchild],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(30)
+    sys.exit(1)
 print(os.environ['FAKE_OJ_API_RESPONSE'])
 '''
 
@@ -395,6 +425,71 @@ class CliIntegration(unittest.TestCase):
                                    env=self.env, timeout=0.25)
         time.sleep(1.75)
         self.assertFalse(survived.exists(), "download descendant survived the timeout")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_sigterm_terminates_download_descendants(self):
+        self._assert_contest_sigterm_terminates_descendants("FAKE_OJ_BLOCK_UNTIL_TERMINATED")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+    def test_contest_sigterm_terminates_lookup_descendants(self):
+        self._assert_contest_sigterm_terminates_descendants("FAKE_OJ_API_BLOCK_UNTIL_TERMINATED")
+        self.assertFalse((self.base / "sigterm-project").exists())
+
+    def _assert_contest_sigterm_terminates_descendants(self, block_env):
+        started = self.base / "sigterm-descendant-started"
+        release = self.base / "sigterm-descendant-release"
+        survived = self.base / "sigterm-descendant-survived"
+        env = self.env.copy()
+        env[block_env] = "1"
+        env.update(FAKE_SIGTERM_STARTED=str(started),
+                   FAKE_SIGTERM_RELEASE=str(release),
+                   FAKE_SIGTERM_SURVIVED=str(survived))
+        process = subprocess.Popen(
+            ["sbcl", "--script", str(CLI), "new",
+             "typical90", str(self.base / "sigterm-project")],
+            cwd=self.base, env=env, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+        descendant_pid = None
+        descendant_group = None
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if started.exists():
+                    fields = started.read_text().split()
+                    if len(fields) == 2 and all(x.isdecimal() for x in fields):
+                        descendant_pid, descendant_group = map(int, fields)
+                        break
+                if process.poll() is not None:
+                    self.fail("ac-lisp exited before the descendant started")
+                time.sleep(0.01)
+            self.assertIsNotNone(descendant_pid, "descendant did not start")
+            self.assertNotEqual(descendant_group, os.getpgrp())
+            process.send_signal(signal.SIGTERM)
+            returncode = process.wait(timeout=10)
+            # A surviving descendant would write this after receiving the release.
+            release.write_text("go")
+            deadline = time.monotonic() + 2
+            while not survived.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(survived.exists(), "descendant survived SIGTERM")
+            self.assertNotEqual(returncode, 0, "ac-lisp reported success after SIGTERM")
+        finally:
+            # The outer helper may survive its SBCL parent on a regression;
+            # it inherited the session started specifically for this test.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if process.poll() is None:
+                process.wait(timeout=10)
+            if descendant_pid is not None:
+                try:
+                    # Avoid signalling an unrelated group if the PID was reused.
+                    if os.getpgid(descendant_pid) == descendant_group:
+                        os.killpg(descendant_group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_new_contest_missing_samples_continues_but_reports_incomplete(self):
         env = self.env.copy()

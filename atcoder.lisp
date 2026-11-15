@@ -28,6 +28,36 @@
                  (zerop (sb-ext:process-exit-code process)))
       (fail "~A failed (status ~A)" program (sb-ext:process-exit-code process)))))
 
+(defun run-terminable (program arguments)
+  "Run a helper, forwarding SIGTERM and waiting for its cleanup."
+  (let ((process nil)
+        (terminated nil))
+    (flet ((terminate-child ()
+             (when (and process (sb-ext:process-alive-p process))
+               (sb-ext:process-kill process sb-unix:sigterm))))
+      (unwind-protect
+           (progn
+             (sb-sys:enable-interrupt
+              sb-unix:sigterm
+              (lambda (signal info context)
+                (declare (ignore signal info context))
+                (unless terminated
+                  (setf terminated t)
+                  (terminate-child))))
+             (setf process
+                   (handler-case
+                       (sb-ext:run-program program arguments :search t :wait nil
+                                           :input t :output t :error t)
+                     (error (e) (fail "cannot run ~A: ~A" program e))))
+             ;; A signal can arrive while RUN-PROGRAM is creating the child.
+             (when terminated (terminate-child))
+             (sb-ext:process-wait process)
+             (when terminated (sb-ext:exit :code 143))
+             (unless (and (eq (sb-ext:process-status process) :exited)
+                          (zerop (sb-ext:process-exit-code process)))
+               (fail "~A failed (status ~A)" program (sb-ext:process-exit-code process))))
+        (sb-sys:enable-interrupt sb-unix:sigterm :default)))))
+
 (defun oj-compat-environment ()
   (let* ((compat (namestring (merge-pathnames "tools/oj-compat/" *root*)))
          (old (uiop:getenv "PYTHONPATH"))
@@ -240,7 +270,7 @@
          (if (or (valid-component-p target)
                  (and (uiop:string-prefix-p "https://atcoder.jp/contests/" target)
                       (not (search "/tasks/" (string-right-trim "/" target)))))
-             (run "python3" (append (list (namestring (merge-pathnames "tools/new-contest.py" *root*))) args))
+             (run-terminable "python3" (append (list (namestring (merge-pathnames "tools/new-contest.py" *root*))) args))
              (new-problem target (second args)))))
       ((string= command "login")
        (cond ((or (null args) (equal args '("--check")))
