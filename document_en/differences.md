@@ -1,7 +1,7 @@
 # Differences from the C++ library
 
 * Indices are 0-based and ranges are half-open `[l, r)`, exactly as in ACL.
-* Monoids are passed as functions: `(make-segtree n :op #'max :e 0)`. The identity `e` (and `id`
+* Monoids are passed as functions: `(make-segtree n :op #'+ :e 0)`. The identity `e` (and `id`
   for lazy segtrees) is a value, not a function.
 * `define-segtree` and `define-lazy-segtree` generate specialized functions with `op`, `mapping`
   and `composition` inlined, which plays the role of C++ templates. Use them when speed matters.

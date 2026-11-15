@@ -2,7 +2,7 @@
 
 ### Manual expansion
 
-For a standalone submission, include the modules you need:
+Save the following as `main.lisp` in your problem directory:
 
 ```lisp
 (acl-include :dsu)
@@ -12,10 +12,11 @@ For a standalone submission, include the modules you need:
   (format t "~A~%" (dsu-same d 0 1)))
 ```
 
-Then expand it:
+From that directory, expand it using the path to your checkout. Replace
+`/path/to/ac-library-lisp` with the actual checkout path:
 
 ```sh
-sbcl --script expander.lisp main.lisp -o combined.lisp
+sbcl --script "/path/to/ac-library-lisp/expander.lisp" main.lisp -o combined.lisp
 sbcl --script combined.lisp
 ```
 
@@ -38,6 +39,8 @@ Load the ASDF system `ac-library`:
 Here, `acl-include` is a no-op, so the same solution works in the REPL.
 
 ## Development
+
+Run these commands from the repository root:
 
 ```sh
 sbcl --script test/run.lisp

@@ -107,13 +107,15 @@ Cookie を更新し、他サイトの Cookie は保持します。Firefox と Li
 
 手動で展開することもできます。
 
-解答ファイルの先頭に `(acl-include :dsu)` のように使いたいモジュールを書き、
+問題ディレクトリの `main.lisp` の先頭に `(acl-include :dsu)` のように使いたい
+モジュールを書きます。次の `/path/to/ac-library-lisp` を実際のリポジトリの
+パスに置き換え、その問題ディレクトリから実行します。
 
 ```sh
-sbcl --script expander.lisp main.lisp -o combined.lisp
+sbcl --script "/path/to/ac-library-lisp/expander.lisp" main.lisp -o combined.lisp
 ```
 
-で展開した `combined.lisp` を提出してください。`(acl-include :all)` で全モジュールを展開します。
+展開した `combined.lisp` を提出してください。`(acl-include :all)` で全モジュールを展開します。
 
 `acl-include` はトップレベルに、それだけで 1 行に書いてください。他のフォームの中、`'` や `#+` などのリーダー記号の直後、コメントや文字列の中にある `acl-include` は展開されません（前の 2 つの場合は警告が表示されます）。詳しいルールは [`document_en/expander.md`](../document_en/expander.md) にあります。
 
@@ -121,12 +123,14 @@ sbcl --script expander.lisp main.lisp -o combined.lisp
 ## C++ 版との違い
 
 * 添字は 0-indexed、区間は半開区間 `[l, r)` で ACL と同じです。
-* モノイドは関数で渡します (`(make-segtree n :op #'max :e 0)`)。単位元 `e` / `id` は関数ではなく値です。
+* モノイドは関数で渡します (`(make-segtree n :op #'+ :e 0)`)。単位元 `e` / `id` は関数ではなく値です。
 * 高速化したい場合は `define-segtree` / `define-lazy-segtree` を使うと、`op` などがインライン展開された専用関数が生成されます (C++ のテンプレートに相当)。
 * modint は `[0, mod)` の普通の整数です。`define-modint` で `name+` `name*` `name/` などの関数が作られます。
 * 各モジュールの詳しい説明は [`document_en/`](../document_en/index.md) にあります。
 
 ## テスト
+
+以下はリポジトリのルートディレクトリで実行します。
 
 ```sh
 sbcl --script test/run.lisp
